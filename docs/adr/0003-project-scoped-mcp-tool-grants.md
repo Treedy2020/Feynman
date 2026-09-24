@@ -1,0 +1,5 @@
+# Project-scoped MCP bridge for external tools
+
+Feynman exposes external tools to a Project's Codex runtime through a Feynman-owned MCP stdio server configured only on that App Server process. The bridge resolves the Project and Principal from server-provided context and checks the persisted `Tool Grant` before every invocation. The first provider adapter is a fixed, read-only DWS enterprise content search; arbitrary DWS subcommands and direct Agent network access are not exposed.
+
+For the local MVP, the DWS adapter invokes the installed host `dws` CLI and uses its existing OS-user profile. This keeps credentials outside persistent Agent Workspaces and avoids mutating global Codex configuration, but it is not yet Feynman's centrally managed multi-tenant External Connection vault. A Tool Result carries source and observation time but is not yet persisted as an Observation. Project owners grant or revoke the tool through Feynman's CLI; there is no separate per-invocation human approval for this read-only operation.

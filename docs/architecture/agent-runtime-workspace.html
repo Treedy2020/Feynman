@@ -1,0 +1,1988 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Rust Feynman Server、CLI、多租户外部工具与 Agent Runtime Workspace 的目标架构草案。"
+    />
+    <title>Feynman · CLI-First Agent Platform</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #17243b;
+        --muted: #65738a;
+        --line: #dce4ef;
+        --paper: #f5f7fb;
+        --white: #ffffff;
+        --blue: #4763e8;
+        --blue-dark: #293eaa;
+        --blue-pale: #edf1ff;
+        --mint: #168a79;
+        --mint-pale: #e8f7f3;
+        --violet: #7153c9;
+        --violet-pale: #f1edff;
+        --amber: #a66a16;
+        --amber-pale: #fff5e4;
+        --shadow: 0 20px 55px rgb(34 54 93 / 8%);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(ellipse at 14% 0%, rgb(89 115 232 / 10%), transparent 35rem),
+          var(--paper);
+      }
+
+      .page {
+        width: min(1240px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 24px 0 64px;
+      }
+
+      .topbar,
+      .brand,
+      .draft-label,
+      .section-kicker,
+      .plane-label,
+      .agent-heading,
+      .unit-label,
+      .provider-label,
+      .status-label,
+      .tiny-label {
+        display: flex;
+        align-items: center;
+      }
+
+      .topbar {
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 38px;
+      }
+
+      .brand {
+        gap: 10px;
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 9px;
+        color: white;
+        background: linear-gradient(145deg, #6680f4, #3449c3);
+        font-size: 13px;
+        letter-spacing: 0;
+      }
+
+      .brand-sub {
+        color: #8792a5;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+      }
+
+      .draft-label {
+        gap: 8px;
+        padding: 7px 11px;
+        border: 1px solid #e4d6b5;
+        border-radius: 999px;
+        color: #865b1d;
+        background: #fffaf0;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        white-space: nowrap;
+      }
+
+      .draft-label::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #d49634;
+        content: "";
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.55fr) minmax(250px, 0.75fr);
+        gap: 48px;
+        align-items: end;
+        padding: 58px 0 46px;
+      }
+
+      .eyebrow,
+      .section-kicker {
+        gap: 10px;
+        color: var(--blue);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.17em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 22px;
+        height: 2px;
+        background: currentColor;
+        content: "";
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 780px;
+        margin: 16px 0 16px;
+        font-size: clamp(34px, 5vw, 59px);
+        font-weight: 760;
+        letter-spacing: -0.055em;
+        line-height: 1.13;
+      }
+
+      h1 em {
+        color: var(--blue);
+        font-style: normal;
+      }
+
+      .hero-copy {
+        max-width: 700px;
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.8;
+      }
+
+      .thesis-card {
+        padding: 19px 20px 18px;
+        border: 1px solid #dce4f1;
+        border-radius: 16px;
+        background: rgb(255 255 255 / 78%);
+        box-shadow: 0 12px 35px rgb(41 60 106 / 5%);
+      }
+
+      .tiny-label {
+        gap: 8px;
+        margin-bottom: 11px;
+        color: #75829a;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+      }
+
+      .tiny-label span {
+        color: var(--blue);
+      }
+
+      .thesis-card strong {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .thesis-card p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: end;
+        margin: 10px 0 19px;
+      }
+
+      .section-kicker {
+        margin-bottom: 9px;
+      }
+
+      .section-head h2 {
+        margin-bottom: 0;
+        font-size: clamp(22px, 3vw, 30px);
+        letter-spacing: -0.035em;
+      }
+
+      .section-note {
+        max-width: 440px;
+        margin-bottom: 2px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.7;
+      }
+
+      .architecture {
+        overflow: hidden;
+        border: 1px solid #dce4ef;
+        border-radius: 22px;
+        background: var(--white);
+        box-shadow: var(--shadow);
+      }
+
+      .planes {
+        display: grid;
+        grid-template-columns: minmax(0, 1.55fr) minmax(290px, 0.85fr);
+      }
+
+      .agent-plane,
+      .application-plane {
+        min-width: 0;
+        padding: 23px;
+      }
+
+      .agent-plane {
+        background:
+          linear-gradient(145deg, rgb(237 241 255 / 72%), transparent 52%),
+          #fbfcff;
+      }
+
+      .application-plane {
+        border-left: 1px solid var(--line);
+        background:
+          linear-gradient(150deg, rgb(241 237 255 / 76%), transparent 50%),
+          #fdfcff;
+      }
+
+      .plane-label {
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 17px;
+        color: #65738d;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+      }
+
+      .plane-label b {
+        color: var(--blue-dark);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+      }
+
+      .project-frame {
+        padding: 13px;
+        border: 1px solid #d8e1f1;
+        border-radius: 17px;
+        background: rgb(255 255 255 / 78%);
+      }
+
+      .project-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 1px 2px 13px;
+      }
+
+      .project-icon,
+      .agent-icon,
+      .service-icon {
+        display: grid;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 10px;
+        font-weight: 800;
+      }
+
+      .project-icon {
+        width: 31px;
+        height: 31px;
+        color: var(--blue-dark);
+        background: var(--blue-pale);
+        font-size: 14px;
+      }
+
+      .project-title {
+        display: grid;
+        gap: 2px;
+      }
+
+      .project-title strong {
+        font-size: 12px;
+      }
+
+      .project-title span {
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .scope-chip {
+        margin-left: auto;
+        padding: 5px 8px;
+        border: 1px solid #e0e6f1;
+        border-radius: 999px;
+        color: #64738d;
+        background: #fff;
+        font-size: 9px;
+        font-weight: 700;
+      }
+
+      .agent-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .agent-card {
+        min-width: 0;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fff;
+        box-shadow: 0 5px 16px rgb(38 57 94 / 4%);
+      }
+
+      .agent-heading {
+        gap: 9px;
+        margin-bottom: 12px;
+      }
+
+      .agent-icon {
+        width: 32px;
+        height: 32px;
+        color: var(--blue-dark);
+        background: var(--blue-pale);
+        font-size: 11px;
+      }
+
+      .reviewer-card .agent-icon {
+        color: var(--mint);
+        background: var(--mint-pale);
+      }
+
+      .agent-name {
+        display: grid;
+        gap: 3px;
+      }
+
+      .agent-name strong {
+        font-size: 12px;
+      }
+
+      .agent-name span {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .lifecycle {
+        margin-left: auto;
+        padding: 4px 7px;
+        border-radius: 999px;
+        color: #4560cb;
+        background: #f0f3ff;
+        font-size: 8px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .reviewer-card .lifecycle {
+        color: #167464;
+        background: #eaf8f4;
+      }
+
+      .runtime-box {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 8px;
+        padding: 9px 10px;
+        border-radius: 9px;
+        color: #fff;
+        background: #293a70;
+      }
+
+      .runtime-box span {
+        color: #c2ccef;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+      }
+
+      .runtime-box strong {
+        font-size: 9px;
+        font-weight: 650;
+        text-align: right;
+      }
+
+      .unit {
+        margin-top: 8px;
+        padding: 10px;
+        border: 1px solid #e4e9f2;
+        border-radius: 10px;
+        background: #fcfdff;
+      }
+
+      .unit.workspace-unit {
+        border-color: #d8e3fb;
+        background: #f6f8ff;
+      }
+
+      .reviewer-card .unit.workspace-unit {
+        border-color: #d2e9e3;
+        background: #f4fbf8;
+      }
+
+      .unit-label {
+        gap: 6px;
+        margin-bottom: 5px;
+        color: #73819a;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+      }
+
+      .unit-label span {
+        color: var(--blue);
+      }
+
+      .reviewer-card .unit-label span {
+        color: var(--mint);
+      }
+
+      .unit strong {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 10px;
+      }
+
+      .unit p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.55;
+      }
+
+      .workspace-flags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 8px;
+      }
+
+      .workspace-flags span {
+        padding: 4px 6px;
+        border: 1px solid #dfe6f7;
+        border-radius: 6px;
+        color: #5268b3;
+        background: #fff;
+        font-size: 8px;
+        font-weight: 700;
+      }
+
+      .reviewer-card .workspace-flags span {
+        border-color: #d5e9e3;
+        color: #247567;
+      }
+
+      .sandbox-provider {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 11px;
+        align-items: center;
+        margin-top: 11px;
+        padding: 11px 12px;
+        border: 1px dashed #bac7df;
+        border-radius: 11px;
+        background: #f8faff;
+      }
+
+      .provider-icon {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 8px;
+        color: var(--blue-dark);
+        background: #e8edff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .provider-copy {
+        display: grid;
+        gap: 3px;
+      }
+
+      .provider-label {
+        gap: 7px;
+        font-size: 10px;
+        font-weight: 800;
+      }
+
+      .provider-label span {
+        color: #7a879c;
+        font-size: 8px;
+        font-weight: 650;
+      }
+
+      .provider-copy small {
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.45;
+      }
+
+      .provider-tag {
+        padding: 5px 7px;
+        border: 1px solid #dfe5f0;
+        border-radius: 7px;
+        color: #63728a;
+        background: white;
+        font-size: 8px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .project-records {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin-top: 11px;
+        padding: 0 3px;
+      }
+
+      .project-records strong {
+        margin-right: 3px;
+        color: #6c7890;
+        font-size: 8px;
+        letter-spacing: 0.1em;
+      }
+
+      .project-records span {
+        padding: 5px 7px;
+        border-radius: 6px;
+        color: #53617a;
+        background: #edf0f6;
+        font-size: 8px;
+        font-weight: 650;
+      }
+
+      .application-intro {
+        margin: -6px 0 14px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.65;
+      }
+
+      .tool-card,
+      .app-card,
+      .service-card {
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: #fff;
+      }
+
+      .tool-card {
+        padding: 13px;
+      }
+
+      .card-overline {
+        margin-bottom: 8px;
+        color: #7a879b;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+      }
+
+      .tool-list {
+        display: grid;
+        gap: 7px;
+      }
+
+      .tool-row {
+        display: grid;
+        grid-template-columns: 27px 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        border-radius: 9px;
+        background: #fafbfe;
+      }
+
+      .service-icon {
+        width: 27px;
+        height: 27px;
+        color: #495bb0;
+        background: #eef1ff;
+        font-size: 10px;
+      }
+
+      .tool-row:nth-child(2) .service-icon {
+        color: #8b5c16;
+        background: #fff4df;
+      }
+
+      .tool-row:nth-child(3) .service-icon {
+        color: #207563;
+        background: #e9f7f2;
+      }
+
+      .tool-row strong {
+        display: block;
+        margin-bottom: 2px;
+        font-size: 10px;
+      }
+
+      .tool-row small {
+        display: block;
+        color: var(--muted);
+        font-size: 8px;
+        line-height: 1.4;
+      }
+
+      .tool-kind {
+        color: #8994a6;
+        font-size: 8px;
+        font-weight: 700;
+      }
+
+      .down-link {
+        display: grid;
+        justify-items: center;
+        gap: 3px;
+        padding: 8px 0;
+        color: #8995aa;
+        font-size: 8px;
+        font-weight: 700;
+      }
+
+      .down-link b {
+        color: #7c68c4;
+        font-size: 15px;
+        line-height: 1;
+      }
+
+      .app-card {
+        padding: 14px;
+        border-color: #ddd5f3;
+        background: linear-gradient(160deg, #fff, #faf8ff);
+      }
+
+      .app-heading {
+        display: flex;
+        gap: 9px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      .app-heading .service-icon {
+        width: 31px;
+        height: 31px;
+        color: var(--violet);
+        background: var(--violet-pale);
+        font-size: 12px;
+      }
+
+      .app-heading strong {
+        display: block;
+        margin-bottom: 2px;
+        font-size: 11px;
+      }
+
+      .app-heading small {
+        color: var(--muted);
+        font-size: 8px;
+      }
+
+      .environments {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px;
+      }
+
+      .environment {
+        padding: 9px;
+        border: 1px solid #e5e0f3;
+        border-radius: 9px;
+        background: #fff;
+      }
+
+      .environment span {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--violet);
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+      }
+
+      .environment strong {
+        display: block;
+        font-size: 9px;
+      }
+
+      .cloud-deps {
+        margin-top: 8px;
+        padding: 9px 10px;
+        border-radius: 9px;
+        color: #5f5874;
+        background: #f1eef8;
+        font-size: 9px;
+        line-height: 1.55;
+      }
+
+      .cloud-deps strong {
+        color: #554889;
+      }
+
+      .capability-note {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid #f0dfbd;
+        border-radius: 10px;
+        color: #715527;
+        background: #fffaf0;
+        font-size: 9px;
+        line-height: 1.55;
+      }
+
+      .capability-note b {
+        color: #a66a16;
+        white-space: nowrap;
+      }
+
+      .workflow-section {
+        padding: 23px;
+        border-top: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .workflow-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: baseline;
+        margin-bottom: 14px;
+      }
+
+      .workflow-head strong {
+        font-size: 12px;
+      }
+
+      .workflow-head span {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .review-flow,
+      .delivery-flow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr) 22px minmax(0, 1fr) 22px minmax(0, 1fr);
+        gap: 7px;
+        align-items: stretch;
+      }
+
+      .flow-step {
+        min-width: 0;
+        padding: 11px 12px;
+        border: 1px solid #e1e7f0;
+        border-radius: 10px;
+        background: #fbfcfe;
+      }
+
+      .flow-step .step-number {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--blue);
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+      }
+
+      .flow-step strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 9px;
+      }
+
+      .flow-step small {
+        display: block;
+        color: var(--muted);
+        font-size: 8px;
+        line-height: 1.5;
+      }
+
+      .flow-step.review {
+        border-color: #d3e9e2;
+        background: #f7fcfa;
+      }
+
+      .flow-step.review .step-number {
+        color: var(--mint);
+      }
+
+      .flow-arrow {
+        display: grid;
+        place-items: center;
+        color: #98a4b8;
+        font-size: 17px;
+      }
+
+      .loop-caption {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .loop-caption b {
+        color: var(--mint);
+        font-size: 12px;
+      }
+
+      .delivery-section {
+        padding: 20px 23px 23px;
+        border-top: 1px solid var(--line);
+        background: linear-gradient(180deg, #fcfbff, #fff);
+      }
+
+      .delivery-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: baseline;
+        margin-bottom: 13px;
+      }
+
+      .delivery-head strong {
+        font-size: 12px;
+      }
+
+      .delivery-head span {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .delivery-flow .flow-step {
+        border-color: #e5def5;
+        background: #fff;
+      }
+
+      .delivery-flow .step-number {
+        color: var(--violet);
+      }
+
+      .delivery-flow .cloud-step {
+        border-color: #d9d1ef;
+        background: #f8f6ff;
+      }
+
+      .model-notes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .note-card {
+        padding: 15px 16px;
+        border: 1px solid #e0e6ef;
+        border-radius: 13px;
+        background: rgb(255 255 255 / 75%);
+      }
+
+      .note-card .note-index {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--blue);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+      }
+
+      .note-card strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 11px;
+      }
+
+      .note-card p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.65;
+      }
+
+      .implementation-status {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 12px;
+        align-items: start;
+        margin-top: 18px;
+        padding: 14px 16px;
+        border: 1px solid #eadbbd;
+        border-radius: 12px;
+        background: #fffaf1;
+      }
+
+      .implementation-status .status-label {
+        gap: 7px;
+        color: #885e20;
+        font-size: 9px;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        white-space: nowrap;
+      }
+
+      .implementation-status .status-label::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #d49634;
+        content: "";
+      }
+
+      .implementation-status p {
+        margin-bottom: 0;
+        color: #76684e;
+        font-size: 9px;
+        line-height: 1.65;
+      }
+
+      footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 18px;
+        color: #8a95a7;
+        font-size: 9px;
+      }
+
+      @media (max-width: 920px) {
+        .hero {
+          grid-template-columns: 1fr;
+          gap: 22px;
+          padding-top: 44px;
+        }
+
+        .thesis-card {
+          max-width: 600px;
+        }
+
+        .planes {
+          grid-template-columns: 1fr;
+        }
+
+        .application-plane {
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+
+        .application-plane-inner {
+          display: grid;
+          grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+          gap: 18px;
+          align-items: start;
+        }
+
+        .application-intro {
+          grid-column: 1 / -1;
+          margin-bottom: -7px;
+        }
+
+        .down-link {
+          display: none;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .page {
+          width: min(100% - 28px, 520px);
+          padding-top: 15px;
+        }
+
+        .brand-sub {
+          display: none;
+        }
+
+        .draft-label {
+          padding: 6px 8px;
+          font-size: 8px;
+        }
+
+        .hero {
+          padding: 39px 0 32px;
+        }
+
+        h1 {
+          font-size: 37px;
+        }
+
+        .hero-copy {
+          font-size: 13px;
+        }
+
+        .section-head {
+          display: block;
+        }
+
+        .section-note {
+          margin-top: 10px;
+        }
+
+        .agent-plane,
+        .application-plane,
+        .workflow-section,
+        .delivery-section {
+          padding: 15px;
+        }
+
+        .agent-grid,
+        .application-plane-inner,
+        .model-notes {
+          grid-template-columns: 1fr;
+        }
+
+        .application-intro {
+          grid-column: auto;
+          margin: -6px 0 12px;
+        }
+
+        .workflow-head,
+        .delivery-head {
+          display: block;
+        }
+
+        .workflow-head span,
+        .delivery-head span {
+          display: block;
+          margin-top: 5px;
+        }
+
+        .review-flow,
+        .delivery-flow {
+          grid-template-columns: 1fr;
+          gap: 5px;
+        }
+
+        .flow-arrow {
+          min-height: 14px;
+          transform: rotate(90deg);
+        }
+
+        .implementation-status {
+          grid-template-columns: 1fr;
+          gap: 7px;
+        }
+
+        footer {
+          display: block;
+          line-height: 1.7;
+        }
+      }
+
+      @media print {
+        body {
+          background: #fff;
+        }
+
+        .page {
+          width: 100%;
+          padding: 0;
+        }
+
+        .architecture {
+          box-shadow: none;
+        }
+
+        .hero {
+          padding-top: 28px;
+        }
+      }
+      /* Apple-inspired visual system: quiet surfaces, clear type, restrained accents. */
+      :root {
+        --ink: #1d1d1f;
+        --muted: #6e6e73;
+        --line: #e5e5ea;
+        --paper: #f5f5f7;
+        --white: #fff;
+        --blue: #0071e3;
+        --blue-dark: #1d1d1f;
+        --blue-pale: #f2f6fc;
+        --mint: #27836c;
+        --mint-pale: #f1f7f4;
+        --violet: #6e61a6;
+        --violet-pale: #f6f5fa;
+        --amber: #8d6b32;
+        --amber-pale: #faf7f0;
+        --shadow: 0 18px 55px rgb(0 0 0 / 5%);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+          "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      }
+
+      body {
+        background: var(--paper);
+      }
+
+      .page {
+        width: min(1180px, calc(100% - 48px));
+        padding-top: 27px;
+      }
+
+      .brand-mark {
+        border-radius: 9px;
+        background: #1d1d1f;
+      }
+
+      .draft-label {
+        border-color: #e2e2e7;
+        color: #5e5e63;
+        background: rgb(255 255 255 / 72%);
+        font-weight: 650;
+        letter-spacing: 0.04em;
+      }
+
+      .draft-label::before {
+        background: #8e8e93;
+      }
+
+      .hero {
+        gap: 54px;
+        padding: 69px 0 57px;
+      }
+
+      h1 {
+        font-weight: 650;
+        letter-spacing: -0.06em;
+        line-height: 1.12;
+      }
+
+      .hero-copy {
+        max-width: 680px;
+        font-size: 14px;
+        line-height: 1.85;
+      }
+
+      .thesis-card {
+        border-color: rgb(255 255 255 / 90%);
+        border-radius: 20px;
+        background: rgb(255 255 255 / 82%);
+        box-shadow: 0 12px 36px rgb(0 0 0 / 4%);
+        backdrop-filter: blur(20px);
+      }
+
+      .architecture {
+        border-color: #e6e6eb;
+        border-radius: 24px;
+        box-shadow: 0 24px 70px rgb(0 0 0 / 5%);
+      }
+
+      .feynman-control-plane {
+        padding: 22px 23px 18px;
+        border-bottom: 1px solid #ececf0;
+        background: linear-gradient(145deg, #fafafd, #f5f5f7);
+      }
+
+      .feynman-control-plane .plane-label {
+        margin-bottom: 12px;
+      }
+
+      .control-flow {
+        display: grid;
+        grid-template-columns: minmax(170px, 0.72fr) 28px minmax(0, 2.3fr);
+        gap: 10px;
+        align-items: stretch;
+      }
+
+      .control-node {
+        min-width: 0;
+        padding: 13px;
+        border: 1px solid #e6e6eb;
+        border-radius: 14px;
+        background: #fff;
+      }
+
+      .control-overline {
+        display: block;
+        margin-bottom: 7px;
+        color: #818187;
+        font-size: 8px;
+        font-weight: 750;
+        letter-spacing: 0.12em;
+      }
+
+      .cli-node > strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 12px;
+      }
+
+      .cli-node > small {
+        display: block;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.55;
+      }
+
+      .control-arrow {
+        display: grid;
+        place-items: center;
+        color: #96969c;
+        font-size: 18px;
+      }
+
+      .server-heading {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 10px;
+      }
+
+      .server-mark {
+        display: grid;
+        flex: 0 0 auto;
+        width: 29px;
+        height: 29px;
+        place-items: center;
+        border-radius: 9px;
+        color: #fff;
+        background: #1d1d1f;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .server-heading-copy {
+        display: grid;
+        gap: 2px;
+      }
+
+      .server-heading-copy strong {
+        font-size: 12px;
+      }
+
+      .server-heading-copy small {
+        color: var(--muted);
+        font-size: 9px;
+      }
+
+      .server-badge {
+        margin-left: auto;
+        padding: 5px 7px;
+        border: 1px solid #e6e6eb;
+        border-radius: 999px;
+        color: #626269;
+        background: #fafafd;
+        font-size: 8px;
+        font-weight: 750;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+      }
+
+      .control-module-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 7px;
+      }
+
+      .control-module {
+        min-width: 0;
+        padding: 9px;
+        border: 1px solid #ededf0;
+        border-radius: 10px;
+        background: #fafafd;
+      }
+
+      .control-module strong,
+      .control-module small {
+        display: block;
+      }
+
+      .control-module strong {
+        margin-bottom: 3px;
+        font-size: 9px;
+      }
+
+      .control-module small {
+        color: var(--muted);
+        font-size: 8px;
+        line-height: 1.45;
+      }
+
+      .agent-access {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-top: 10px;
+        color: #606067;
+        font-size: 9px;
+        line-height: 1.5;
+      }
+
+      .agent-access-label {
+        color: #74747a;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+      }
+
+      .agent-plane {
+        background: #fff;
+      }
+
+      .application-plane {
+        border-left-color: #e8e7ec;
+        background: #fafafd;
+      }
+
+      .project-frame {
+        border-color: #ededf0;
+        border-radius: 18px;
+        background: #fafafd;
+      }
+
+      .agent-card {
+        border-color: #e8e8ed;
+        border-radius: 16px;
+        box-shadow: 0 4px 16px rgb(0 0 0 / 3%);
+      }
+
+      .generator-card {
+        border-top: 2px solid #7aa9dc;
+      }
+
+      .reviewer-card {
+        border-top: 2px solid #87b5a4;
+      }
+
+      .runtime-box {
+        border: 1px solid #ededf0;
+        color: #1d1d1f;
+        background: #f5f5f7;
+      }
+
+      .runtime-box span {
+        color: #6e6e73;
+      }
+
+      .runtime-box strong {
+        color: #1d1d1f;
+      }
+
+      .project-title strong,
+      .agent-name strong {
+        font-size: 13px;
+      }
+
+      .project-title span,
+      .agent-name span {
+        font-size: 10px;
+      }
+
+      .unit-label,
+      .card-overline,
+      .step-number {
+        font-size: 9px;
+      }
+
+      .unit strong,
+      .tool-row strong,
+      .flow-step strong {
+        font-size: 10px;
+      }
+
+      .unit p,
+      .tool-row small,
+      .flow-step small,
+      .sandbox-detail small {
+        font-size: 9px;
+      }
+
+      .provider-label {
+        font-size: 11px;
+      }
+
+      .provider-copy small {
+        font-size: 10px;
+      }
+
+      .provider-tag,
+      .workspace-flags span,
+      .reviewer-card .workspace-flags span {
+        font-size: 9px;
+      }
+
+      .sandbox-detail strong {
+        font-size: 10px;
+      }
+
+      .note-card strong {
+        font-size: 12px;
+      }
+
+      .note-card p {
+        font-size: 10px;
+      }
+
+      footer a {
+        color: inherit;
+        text-decoration-color: #c7c7cc;
+        text-underline-offset: 3px;
+      }
+
+      footer a:hover {
+        color: var(--blue);
+      }
+
+      .unit {
+        border-color: #ededf0;
+        background: #fff;
+      }
+
+      .unit.workspace-unit,
+      .reviewer-card .unit.workspace-unit {
+        border-color: #e7eaf0;
+        background: #f8f9fb;
+      }
+
+      .workspace-flags span,
+      .reviewer-card .workspace-flags span {
+        border-color: #e5e5ea;
+        color: #5f6875;
+        background: #fff;
+      }
+
+      .sandbox-provider {
+        border: 1px solid #e6e6eb;
+        border-radius: 13px;
+        background: #fff;
+      }
+
+      .provider-icon {
+        color: #fff;
+        background: #1d1d1f;
+      }
+
+      .provider-tag {
+        border-color: #e5e5ea;
+        color: #4f5968;
+        background: #f5f5f7;
+      }
+
+      .sandbox-details {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .sandbox-detail {
+        min-width: 0;
+        padding: 10px 11px;
+        border: 1px solid #e9e9ed;
+        border-radius: 10px;
+        background: #fff;
+      }
+
+      .detail-label {
+        display: block;
+        margin-bottom: 5px;
+        color: #7a7a80;
+        font-size: 8px;
+        font-weight: 750;
+        letter-spacing: 0.1em;
+      }
+
+      .sandbox-detail strong {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 9px;
+      }
+
+      .sandbox-detail small {
+        display: block;
+        color: var(--muted);
+        font-size: 8px;
+        line-height: 1.5;
+      }
+
+      .project-records span {
+        color: #5f6268;
+        background: #f0f0f2;
+      }
+
+      .tool-card,
+      .app-card,
+      .service-card {
+        border-color: #e8e8ed;
+        border-radius: 15px;
+        box-shadow: 0 4px 16px rgb(0 0 0 / 2%);
+      }
+
+      .tool-row {
+        background: #f8f8fa;
+      }
+
+      .app-card {
+        border-color: #e5e2ed;
+        background: #fff;
+      }
+
+      .environment {
+        border-color: #ebebef;
+      }
+
+      .cloud-deps {
+        color: #66616f;
+        background: #f5f4f8;
+      }
+
+      .capability-note {
+        border-color: #ece7d9;
+        color: #70664f;
+        background: #fbfaf7;
+      }
+
+      .workflow-section,
+      .delivery-section {
+        background: #fff;
+      }
+
+      .flow-step {
+        border-color: #e8e8ed;
+        border-radius: 12px;
+        background: #fafafd;
+      }
+
+      .flow-step.review {
+        border-color: #e2ece7;
+        background: #f8fbf9;
+      }
+
+      .delivery-flow .flow-step,
+      .delivery-flow .cloud-step {
+        border-color: #e8e6ed;
+        background: #fafafd;
+      }
+
+      .note-card {
+        border-color: #e7e7ec;
+        border-radius: 15px;
+        background: #fff;
+      }
+
+      .implementation-status {
+        border-color: #e7e7ec;
+        border-radius: 14px;
+        background: #fff;
+      }
+
+      .implementation-status .status-label,
+      .implementation-status p {
+        color: #68686e;
+      }
+
+      .implementation-status .status-label::before {
+        background: #8e8e93;
+      }
+
+      footer {
+        color: #8a8a90;
+      }
+
+      @media (max-width: 620px) {
+        .sandbox-details {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 920px) {
+        .control-flow {
+          grid-template-columns: 1fr;
+        }
+
+        .control-arrow {
+          min-height: 12px;
+          transform: rotate(90deg);
+        }
+      }
+
+      @media (max-width: 620px) {
+        .feynman-control-plane {
+          padding: 15px;
+        }
+
+        .control-module-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .server-badge {
+          font-size: 7px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">F</span>
+          <span>FEYNMAN</span>
+          <span class="brand-sub">FOUNDATION MODEL</span>
+        </div>
+        <span class="draft-label">目标架构草案 · 不是当前部署状态</span>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <div class="eyebrow">Feynman Control Plane / CLI-First Architecture</div>
+          <h1 id="page-title">用户通过 CLI 接入中心，<br /><em>Agent 在受控工作区调用工具。</em></h1>
+          <p class="hero-copy">
+            Rust Feynman Server 管理多租户身份、项目权限、外部连接和凭证；常规用户通过 CLI 使用中心服务，Agent Runtime 通过 MCP 调用受限工具。Agent 的可恢复 Workspace 不持有外部源凭证，项目应用及主要依赖可以独立运行在云端。
+          </p>
+        </div>
+        <aside class="thesis-card">
+          <div class="tiny-label"><span>01</span> CORE PRINCIPLE</div>
+          <strong>凭证属于 Feynman 管理，不属于 Agent Workspace。</strong>
+          <p>Server 是身份、工具授权和连接状态的中心；Sandbox 可暂停、回收和重建。</p>
+        </aside>
+      </section>
+
+      <section aria-labelledby="architecture-title">
+        <div class="section-head">
+          <div>
+            <div class="section-kicker">01 / COMPONENT MAP</div>
+            <h2 id="architecture-title">中心服务管理身份和工具，Agent 各自拥有工作区</h2>
+          </div>
+          <p class="section-note">
+            用户 CLI 与 Agent MCP 是两种不同入口；Feynman Server 执行租户与项目授权，Sandbox Runtime 只承载 Agent 会话和工作文件。
+          </p>
+        </div>
+
+        <div class="architecture">
+          <section class="feynman-control-plane" aria-label="Feynman 多租户中心服务">
+            <div class="plane-label">
+              <b>FEYNMAN CONTROL PLANE</b>
+              <span>RUST SERVER · MULTI-TENANT · CLI FIRST</span>
+            </div>
+            <div class="control-flow">
+              <article class="control-node cli-node">
+                <span class="control-overline">HUMAN ENTRY</span>
+                <strong>Feynman CLI</strong>
+                <small>用户登录中心，选择 Tenant / Project，并管理外部连接。</small>
+              </article>
+              <div class="control-arrow" aria-hidden="true">↔</div>
+              <article class="control-node server-node">
+                <div class="server-heading">
+                  <div class="server-mark">F</div>
+                  <div class="server-heading-copy">
+                    <strong>Feynman Server</strong>
+                    <small>Rust · 中心身份、权限与凭证管理</small>
+                  </div>
+                  <span class="server-badge">CANONICAL POLICY</span>
+                </div>
+                <div class="control-module-grid">
+                  <div class="control-module">
+                    <strong>Tenant Identity</strong>
+                    <small>User · Tenant · Project membership</small>
+                  </div>
+                  <div class="control-module">
+                    <strong>Connections & Credentials</strong>
+                    <small>用户自有或租户共享；凭证留在中心</small>
+                  </div>
+                  <div class="control-module">
+                    <strong>Tool Catalog & Grants</strong>
+                    <small>工具定义 · 项目授权 · 调用审计</small>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <div class="agent-access">
+              <span class="agent-access-label">AGENT TOOL INTERFACE</span>
+              <span>Agent Runtime ── MCP ──▶ Feynman Tool Module · 按 Project Tool Grant 授权；凭证不进入 Workspace</span>
+            </div>
+          </section>
+
+          <div class="planes">
+            <section class="agent-plane" aria-label="Agent 工作区">
+              <div class="plane-label"><b>AGENT PLANE</b><span>项目内长期角色</span></div>
+
+              <div class="project-frame">
+                <div class="project-head">
+                  <div class="project-icon">P</div>
+                  <div class="project-title">
+                    <strong>Project</strong>
+                    <span>共享项目事实、代码来源与交付记录</span>
+                  </div>
+                  <span class="scope-chip">Project scope</span>
+                </div>
+
+                <div class="agent-grid">
+                  <article class="agent-card generator-card">
+                    <div class="agent-heading">
+                      <div class="agent-icon">G</div>
+                      <div class="agent-name">
+                        <strong>Generator</strong>
+                        <span>实现与维护项目</span>
+                      </div>
+                      <span class="lifecycle">LONG-LIVED</span>
+                    </div>
+
+                    <div class="runtime-box">
+                      <span>AGENT RUNTIME</span>
+                      <strong>Codex / Multica adapter</strong>
+                    </div>
+
+                    <div class="unit">
+                      <div class="unit-label"><span>01</span> SESSION</div>
+                      <strong>长期会话 G</strong>
+                      <p>保留沟通连续性；运行进程可重启并恢复。</p>
+                    </div>
+
+                    <div class="unit workspace-unit">
+                      <div class="unit-label"><span>02</span> WORKSPACE</div>
+                      <strong>Generator 开发工作区</strong>
+                      <p>项目检出、CLI、依赖和轻量本地进程。</p>
+                      <div class="workspace-flags">
+                        <span>可写</span><span>可暂停</span><span>可恢复</span>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article class="agent-card reviewer-card">
+                    <div class="agent-heading">
+                      <div class="agent-icon">R</div>
+                      <div class="agent-name">
+                        <strong>Reviewer</strong>
+                        <span>独立审查与复现</span>
+                      </div>
+                      <span class="lifecycle">LONG-LIVED</span>
+                    </div>
+
+                    <div class="runtime-box">
+                      <span>AGENT RUNTIME</span>
+                      <strong>独立会话与工具配置</strong>
+                    </div>
+
+                    <div class="unit">
+                      <div class="unit-label"><span>01</span> SESSION</div>
+                      <strong>长期会话 R</strong>
+                      <p>与 Generator 分开，维护独立审查上下文。</p>
+                    </div>
+
+                    <div class="unit workspace-unit">
+                      <div class="unit-label"><span>02</span> WORKSPACE</div>
+                      <strong>Reviewer 审查工作区</strong>
+                      <p>检出本轮固定版本；可运行检查并使用临时空间。</p>
+                      <div class="workspace-flags">
+                        <span>独立隔离</span><span>固定版本</span><span>不改 Generator 工作区</span>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+
+                <div class="sandbox-provider">
+                  <div class="provider-icon">G</div>
+                  <div class="provider-copy">
+                    <div class="provider-label">GKE Agent Sandbox <span>GA · WORKSPACE PROVIDER</span></div>
+                    <small>每个 Agent 使用独立 Sandbox Pod；通过 gVisor RuntimeClass 隔离执行环境。</small>
+                  </div>
+                  <span class="provider-tag">gVisor</span>
+                </div>
+
+                <div class="sandbox-details">
+                  <div class="sandbox-detail">
+                    <span class="detail-label">PERSISTENT WORKSPACE</span>
+                    <strong>每个 Agent 独立 PVC</strong>
+                    <small>Sandbox Pod 删除或重建后重新挂载，保留代码和工作文件。</small>
+                  </div>
+                  <div class="sandbox-detail">
+                    <span class="detail-label">OPTIONAL LIVE RESTORE</span>
+                    <strong>GKE Pod Snapshots</strong>
+                    <small>暂停时保存内存与文件系统状态；恢复需使用支持该功能的 GKE 版本和机型。</small>
+                  </div>
+                </div>
+
+                <div class="project-records">
+                  <strong>PROJECT RECORDS</strong>
+                  <span>Git / 代码版本</span>
+                  <span>需求与 Evidence</span>
+                  <span>Review 记录</span>
+                  <span>运行与审计事件</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="application-plane" aria-label="项目工具与云端应用环境">
+              <div class="plane-label"><b>APPLICATION PLANE</b><span>远端项目运行环境</span></div>
+              <p class="application-intro">
+                Agent 通过项目工具操作代码协作和云资源；应用可以依赖云端托管服务，Workspace 只需承担开发和检查工作。
+              </p>
+
+              <div class="application-plane-inner">
+                <div class="tool-card">
+                  <div class="card-overline">PROJECT TOOLS · FEYNMAN-MANAGED ADAPTERS</div>
+                  <div class="tool-list">
+                    <div class="tool-row">
+                      <div class="service-icon">G</div>
+                      <div><strong>GitLab</strong><small>Repo · Branch · MR · Pipeline</small></div>
+                      <span class="tool-kind">协作</span>
+                    </div>
+                    <div class="tool-row">
+                      <div class="service-icon">D</div>
+                      <div><strong>Build & Deploy</strong><small>构建、制品、部署目标</small></div>
+                      <span class="tool-kind">交付</span>
+                    </div>
+                    <div class="tool-row">
+                      <div class="service-icon">O</div>
+                      <div><strong>Observe</strong><small>Staging URL · Logs · Metrics</small></div>
+                      <span class="tool-kind">观测</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="down-link"><span>经项目工具与发布链路</span><b>↓</b></div>
+                  <div class="app-card">
+                    <div class="app-heading">
+                      <div class="service-icon">↗</div>
+                      <div>
+                        <strong>Application Runtime</strong>
+                        <small>应用实际运行的位置</small>
+                      </div>
+                    </div>
+                    <div class="environments">
+                      <div class="environment"><span>STAGING</span><strong>云端验证环境</strong></div>
+                      <div class="environment"><span>PRODUCTION</span><strong>线上服务</strong></div>
+                    </div>
+                    <div class="cloud-deps"><strong>Remote dependencies</strong><br />托管数据库 · 云 API · 队列 · 对象存储 · 真实配置</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="capability-note">
+                <b>权限与凭证</b>
+                <span>中心 Server 校验 Tool Grant 并调用外部 Adapter；外部凭证留在服务端，Workspace 不挂载。</span>
+              </div>
+            </section>
+          </div>
+
+          <section class="workflow-section" aria-labelledby="review-title">
+            <div class="workflow-head">
+              <strong id="review-title">Review 是两个长期 Agent 之间的往返</strong>
+              <span>每轮 Review 固定到一个 Candidate SHA</span>
+            </div>
+            <div class="review-flow">
+              <div class="flow-step">
+                <span class="step-number">01 · GENERATOR</span>
+                <strong>提交变更证据</strong>
+                <small>Diff · Candidate SHA · 测试结果</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step review">
+                <span class="step-number">02 · REVIEWER</span>
+                <strong>独立检出并复核</strong>
+                <small>在自己的 Workspace 复现、检查、提出问题</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step review">
+                <span class="step-number">03 · REVIEW ROUND</span>
+                <strong>记录意见与结论</strong>
+                <small>结论关联被审版本和证据，不覆盖历史轮次</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step">
+                <span class="step-number">04 · GENERATOR</span>
+                <strong>回应并继续修改</strong>
+                <small>保留长期会话，提交新版本后开启下一轮</small>
+              </div>
+            </div>
+            <div class="loop-caption"><b>↶</b><span>有问题时回到 Generator；新 Diff 使用新的 Candidate SHA，Reviewer 对新版本再次审查。</span></div>
+          </section>
+
+          <section class="delivery-section" aria-labelledby="delivery-title">
+            <div class="delivery-head">
+              <strong id="delivery-title">应用交付链与 Agent Workspace 解耦</strong>
+              <span>工作区可只运行部分组件，或连接远端 Staging 验证</span>
+            </div>
+            <div class="delivery-flow">
+              <div class="flow-step">
+                <span class="step-number">SOURCE</span>
+                <strong>GitLab Repo / MR</strong>
+                <small>代码版本与协作历史</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step">
+                <span class="step-number">BUILD</span>
+                <strong>CI / Cloud Build</strong>
+                <small>干净环境构建并运行检查</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step cloud-step">
+                <span class="step-number">STAGING</span>
+                <strong>制品部署到云端</strong>
+                <small>真实云配置与依赖验证</small>
+              </div>
+              <div class="flow-arrow" aria-hidden="true">→</div>
+              <div class="flow-step cloud-step">
+                <span class="step-number">PRODUCTION</span>
+                <strong>受控发布</strong>
+                <small>按项目发布能力与策略执行</small>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="model-notes" aria-label="架构原则">
+        <article class="note-card">
+          <span class="note-index">MODEL / 01</span>
+          <strong>持久化的是 Workspace</strong>
+          <p>稳定的 Workspace 身份和文件状态可恢复；底层容器算力可以暂停、回收和重建。</p>
+        </article>
+        <article class="note-card">
+          <span class="note-index">MODEL / 02</span>
+          <strong>应用不必跑在 Workspace</strong>
+          <p>Agent 可以在本地工作区做少量修改，通过 Staging URL、日志和项目工具验证远端应用。</p>
+        </article>
+        <article class="note-card">
+          <span class="note-index">MODEL / 03</span>
+          <strong>Session、Workspace、Run 各有生命周期</strong>
+          <p>长期 Agent 连续性由持久记录支撑，不依赖某个永不退出的进程。</p>
+        </article>
+      </section>
+
+      <aside class="implementation-status">
+        <div class="status-label">IMPLEMENTATION STATUS</div>
+        <p>
+          Rust CLI / Server 的本地纵向切片已实现 Project 管理、租户作用域 SQLite、持久本地 Workspace、Codex App Server 对话及可续读的 Agent Run 事件。Codex 使用 workspaceWrite 沙盒、Project Workspace 文件范围、关闭沙盒内网络并通过原生 onRequest 审批处理越界命令。当前身份仍是固定的 local dev Principal，Server 强制 loopback；正式用户认证、远程多租户服务、中心凭证管理、Feynman MCP 工具模块、GKE Agent Sandbox、gVisor、Workspace PVC / Pod Snapshots、Generator / Reviewer 双运行时及正式外部源 Adapter 尚未接入。Agent Session 已与 Agent Run 分开建模，但 Heartbeat / 定期唤醒接口尚未启用。上图其余部分展示的是目标架构；初期用户界面为 CLI，不包含 Web GUI。
+        </p>
+      </aside>
+
+      <footer>
+        <span>Feynman Agent Platform · Architecture Draft</span>
+        <span>
+          <a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/machine-learning/agent-sandbox" target="_blank" rel="noreferrer">GKE Agent Sandbox</a>
+          · <a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods" target="_blank" rel="noreferrer">gVisor</a>
+          · <a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-pod-snapshots" target="_blank" rel="noreferrer">Pod Snapshots</a>
+        </span>
+      </footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+# Rust server with a CLI-first, multi-tenant product
+
+Feynman's target product is a central Rust server with a Rust CLI as its first human interface; a web GUI is deferred. The server owns tenant-scoped identity and project access, External Connections, Tool Grants, credential custody and tool invocation, while Agent Runtimes remain independently managed and call project-scoped Feynman tools through their native MCP support. Provider-specific behavior stays behind Tool Adapters so credentials do not enter persistent Agent Workspaces. This supersedes ADR-0001's TypeScript implementation choice while retaining its provider-agnostic governance principle. Rust is now the active implementation; the previous TypeScript implementation is no longer part of the runnable backend.
