@@ -29,6 +29,7 @@
     ], { submenus: [{ id: "sidebar-providers", label: "接入渠道 / CLI", keys: ["dws-module", "gitlab-module", "git-module", "slate-module", "drlee-module"] }] }],
     ["测试与验证", [
       ["iteration-direction", "迭代方向测试设计", "testing/iteration-direction.html", "设计"],
+      ["code-iteration", "代码迭代与 MR 数据集", "testing/code-iteration.html", "初版"],
       ["historical-source-map", "事实源与版本映射", "testing/historical-source-map.html"],
       ["edc-evaluation", "EDC 证据与评分", "testing/edc-evaluation-pack.html"],
       ["cohort-workbench", "Cohort 本地工作台验证", "testing/cohort-workbench-20261009.html"],

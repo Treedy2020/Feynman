@@ -1,0 +1,23 @@
+{
+  "schema_version": "feynman.code-iteration/v1",
+  "operator_only": true,
+  "case_id": null,
+  "test_mode": "assisted_replay",
+  "required_stage": "committed",
+  "repository": {"remote": null, "upstream_base_sha": null, "runtime_baseline_sha": null, "source_manifest_sha256": null, "excluded_paths": []},
+  "input": {"start_inclusive": null, "end_exclusive": null, "source_registrations": [], "snapshot_sha256": null, "messages_complete": null, "attachment_limits": [], "future_answers_visible": false},
+  "runtime": {"project_id": null, "agent_id": null, "run_ids": [], "model_provider": "company", "model": "gpt-5.6-terra", "effort": "max", "database": "isolated-sqlite", "production_credentials": false, "patient_documents": false},
+  "authorization": {"local_edit": true, "local_test": true, "local_commit": true, "remote_push": false, "remote_mr": false, "deploy": false, "external_message": false},
+  "decisions": [],
+  "stages": {
+    "proposed": {"status": "not_run", "evidence": []},
+    "implemented": {"status": "not_run", "evidence": []},
+    "tested": {"status": "not_run", "commands": [], "negative_cases": [], "independent_verification": []},
+    "running": {"status": "not_run", "health": [], "business_checks": []},
+    "committed": {"status": "not_run", "sha": null, "parent_sha": null, "patch_sha256": null},
+    "mr_created": {"status": "not_required", "provider": null, "id": null, "url": null, "remote_sha": null}
+  },
+  "critical_checks": {"input_not_changed": "pending", "no_existing_human_patch": "pending", "no_secret_or_patient_data_committed": "pending", "no_unauthorized_external_write": "pending", "no_unverified_success_claim": "pending"},
+  "result": "not_run",
+  "limitations": []
+}

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>代码迭代数据集 · Feynman Docs</title><link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css"><script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="code-iteration" data-docs-root="..">
+<div class="page"><header class="topbar"></header><main id="content">
+  <section class="hero"><span class="doc-status">第二阶段 · 可执行迭代 · 2026-10-10</span>
+    <h1>从真实反馈到可运行的代码提交。</h1>
+    <p class="lead">评估 Agent 是否能判断需求方向、修改固定代码版本、实际运行并验证，再生成可审查的提交。Merge Request 是独立远端门禁，不是本地提交的别名。</p>
+    <p class="note">首例 Cohort I-01 的当前目标是本地启动、回归和 commit；不部署、不发送消息、不以缺少 Codeup 权限为由伪造 MR 成功。实时订阅必须先完成项目认证与人员确认。</p>
+  </section>
+  <nav class="toc" aria-label="本页目录"><a href="#case">样本契约</a><a href="#stages">验收阶段</a><a href="#sources">订阅与冻结</a><a href="#runtime">运行配置</a><a href="#safety">证据与隔离</a></nav>
+  <section class="section" id="case"><h2>一个样本对应一个变更包，不对应一段聊天。</h2>
+    <p>使用 <a href="code-iteration-case-template.json">结构化用例模板</a>：仓库、upstream base SHA、runtime baseline SHA、源文件哈希、事实范围/快照哈希、授权、需求判断、patch/commit、测试命令及退出码、实际启动与业务验证结果、可选远端 MR。</p>
+    <p>被测 Agent 可见固定基线、同版本 Skill、反馈事实和合成运行配置；评估端另外持有预期验收与独立复核记录。不给 Agent 后续实现或标准答案。</p>
+    <p>历史 seed API 重新初始化 Git；runtime baseline SHA 不等于 upstream base SHA。必须保留逐文件映射与排除清单，不能冒充上游原提交。未来 MR 需在授权后将 patch 应用到真实上游基线并复核。</p>
+    <p>每条需求标记 implement / already_supported / clarify / reject / defer，引用消息 ID、代码位置与理由。合理拒绝须给出目标、约束和替代方案；不能因“太复杂”就拒绝业务目标。</p>
+  </section>
+  <section class="section" id="stages"><h2>逐级门禁，失败保留证据。</h2>
+    <table><thead><tr><th>阶段</th><th>独立验收证据</th><th>不等于通过</th></tr></thead><tbody>
+      <tr><td>proposed</td><td>需求 → 来源 → 代码 → 判断与验收</td><td>泛泛方案或自评分</td></tr>
+      <tr><td>implemented</td><td>实际 diff，处理基线尚未满足的反馈</td><td>只修改报告或使用已有人工实现</td></tr>
+      <tr><td>tested</td><td>真实命令、退出码、正反例和适当仓库门禁</td><td>模拟结果或仅检查语法</td></tr>
+      <tr><td>running</td><td>实际 API/前端进程、HTTP 健康和合成业务路径</td><td>只有 health 或纯函数测试</td></tr>
+      <tr><td>committed</td><td>实际 Git SHA、父提交、干净工作树和完整 diff</td><td>未执行的 commit 命令</td></tr>
+      <tr><td>mr_created</td><td>授权远端、分支、服务端 MR ID/URL 和远端 SHA</td><td>本地 commit 或 MR 草稿</td></tr>
+    </tbody></table>
+    <p>阶段状态分 not_run / blocked / failed / passed。当前目标截至 committed；mr_created 为 not_required。远端 MR 成功不代表合并或部署。</p>
+  </section>
+  <section class="section" id="sources"><h2>长期订阅与可重放数据集是两种视图。</h2>
+    <p>每人独立 Source ID、cursor 与长期历史。历史消息做有界读取并记录完整性；实时用 dws_events 长连接，必须看到 ready / live。断线和停止记为 gap，不伪称连续覆盖。</p>
+    <p>一个 Schedule 聚合两个来源，从首次事件开固定 30 分钟窗口，投递给一个 Agent。落盘、投递、处理分开；订阅不授予 push / 部署 / 回复权限。</p>
+    <p>每个用例运行前冻结 [start,end) 与消息哈希。运行中新增事实作为下一用例候选，不能静默改变本轮输入。本轮为 assisted replay，不自动视为盲测基准。</p>
+  </section>
+  <section class="section" id="runtime"><h2>真实应用，隔离环境，合成业务数据。</h2>
+    <p>本机 OpenSandbox Docker 持久 Workspace；公司模型 gpt-5.6-terra / max。模型和 DWS 凭据留在本机控制面，镜像与仓库不含认证文件。</p>
+    <p>后端 uv.lock、前端 package-lock.json 固定依赖；单独 SQLite、local-dev 认证，关闭线上 worker 与公共样例引导。涉及 PostgreSQL 专属语义时单独验证，不将 SQLite 结果当生产发布门禁。</p>
+    <p>依赖安装、检查和应用服务分别用 owner 批准的 Environment Profile / usage lease。测试账号也用 secret reference。受控 loopback 转发只访问该沙盒；完成后清理转发和临时 workload，保留 Workspace/证据。</p>
+    <p>准备脚本 scripts/opensandbox/iteration_workbench.py 只准备新项目和依赖，不隐式启动模型、订阅、push 或部署。</p>
+  </section>
+  <section class="section" id="safety"><h2>私有事实留本机，公共结构进仓库。</h2>
+    <p>消息正文、患者文档、日志和运行快照放 .feynman/evaluation-evidence/，目录 0700、文件 0600。代码仓库只保存脚本、模板、脱敏报告和哈希，不提交原始消息、Token、生产 env 或 DB。</p>
+    <p>既有 Cohort dirty worktree 保持原样。种子仅来自固定 Git 基线，不夹带本地未提交代码；排除真实病例、生产配置与答案资料。新增 commit 只包含应用源码和必要测试。</p>
+    <p>独立复核关键测试与业务路径，检查 diff / 进程 / HTTP，不仅凭模型报告判通过。反例包含：已处理需求不重复改、资料不足不伪造结论、快速流程不冒充完整审核、权限不足不读宿主凭据。</p>
+  </section>
+</main><footer><a href="../index.html">← 架构总览</a><span>Feynman · 实现阶段数据集</span></footer></div>
+</body></html>

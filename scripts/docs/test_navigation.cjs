@@ -56,7 +56,7 @@ for (const id of ["sidebar-testing", "sidebar-decisions", "sidebar-history", "si
 const entries = Array.from(overview.groups).flatMap(group => Array.from(group[1]));
 const keys = entries.map(entry => entry[0]);
 assert.equal(new Set(keys).size, keys.length, "one location per document");
-assert.equal(keys.length, 34, "existing entries preserved plus the Cohort workbench report");
+assert.equal(keys.length, 35, "existing entries preserved plus executable iteration dataset");
 assert.ok(keys.includes("cohort-workbench"), "Cohort verification is discoverable in the docs");
 for (const [key, , target] of entries) {
   assert.ok(fs.existsSync(path.resolve(__dirname, "../../docs", target)), target);
