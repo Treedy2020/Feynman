@@ -4,6 +4,54 @@ use serde_json::Value;
 
 pub type Id = String;
 
+/// Public authorization metadata only. Credentials and device codes are never serialized here.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DwsAuthorization {
+    pub id: Id,
+    pub project_id: Id,
+    pub reason: String,
+    pub status: DwsAuthorizationStatus,
+    pub verification_uri: Option<String>,
+    pub verification_uri_complete: Option<String>,
+    pub user_code: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub identity: Option<DwsIdentity>,
+    pub error_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub checked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DwsAuthorizationStatus {
+    Preparing,
+    WaitingForUser,
+    Authorized,
+    Expired,
+    Denied,
+    Failed,
+    Cancelled,
+    Interrupted,
+    AuthenticationRequired,
+}
+
+impl DwsAuthorizationStatus {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Preparing | Self::WaitingForUser)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DwsIdentity {
+    pub corp_id: String,
+    pub user_id: String,
+    pub corp_name: Option<String>,
+    pub user_name: Option<String>,
+    pub token_expires_at: Option<DateTime<Utc>>,
+    pub refresh_expires_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Principal {
     pub user_id: Id,
@@ -174,6 +222,7 @@ pub struct AgentTurnInput {
     pub session: AgentSession,
     pub message: String,
     pub workspace_path: String,
+    pub execution_environment: Option<crate::NativeExecutionEnvironment>,
     pub instructions: String,
 }
 
@@ -208,6 +257,8 @@ pub enum AgentRuntimeEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
+    #[serde(default)]
+    pub without_agent: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,4 +271,27 @@ pub struct SendMessageResponse {
     pub conversation: Conversation,
     pub user_message: ConversationMessage,
     pub run: AgentRun,
+}
+
+/// A durable attention record, not an Inbox input or an approval decision.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Notification {
+    pub sequence: i64,
+    pub id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub run_id: String,
+    pub kind: String,
+    pub created_at: DateTime<Utc>,
+    pub read: bool,
+    pub resolved: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotificationFeed {
+    pub items: Vec<Notification>,
+    pub next_after: i64,
+    pub head: i64,
+    pub unread: i64,
+    pub has_more: bool,
 }

@@ -14,6 +14,7 @@ pub struct ExternalToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    pub read_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -135,12 +136,8 @@ impl ExternalToolService {
     ) -> PlatformResult<ExternalToolResult> {
         self.repository.get_project(principal, project_id)?;
         self.ensure_known_tool(tool_id)?;
-        if !self
-            .repository
-            .is_tool_granted(principal, project_id, tool_id)?
-        {
-            return Err(PlatformError::ToolNotGranted(tool_id.to_owned()));
-        }
+        self.repository
+            .check_agent_tool(principal, project_id, tool_id)?;
         let context = ExternalToolContext {
             principal: principal.clone(),
             project_id: project_id.to_owned(),
@@ -273,6 +270,7 @@ mod tests {
             _: &crate::Conversation,
             _: &crate::AgentSession,
             _: &str,
+            _: Option<&str>,
         ) -> PlatformResult<crate::SubmittedMessage> {
             unreachable!()
         }
@@ -328,6 +326,7 @@ mod tests {
     impl ExternalToolAdapter for FakeAdapter {
         fn definitions(&self) -> Vec<ExternalToolDefinition> {
             vec![ExternalToolDefinition {
+                read_only: true,
                 id: "dws.aisearch.enterprise".into(),
                 mcp_name: "dws_search_enterprise".into(),
                 name: "DWS enterprise search".into(),

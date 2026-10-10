@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="多项目 Feynman 的外部权限设计：认证连接、项目 Grant、申请生命周期与 Rust Provider trait。设计提案，非已上线 API。">
+  <title>Feynman Docs · 外部权限统一抽象</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="access-model" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero">
+      <span class="doc-status historical">完整目标模型 · 基础 Rust V1 已实现 · 策略设计更新 2026-10-08</span>
+      <h1>认证可以复用，项目权限不能继承。</h1>
+      <p class="lead">Feynman 是多项目管家：可以创建 Project、准备执行环境、代项目发起认证与权限申请。外部账号由用户管理，具体使用权属于 Project。Agent 可以提出需求，不能批准自己的提权。</p>
+      <p class="note">本轮已实现 Rust 组合策略的最小闭环、Agent 权限交集及独立来源历史 / Schedule / Inbox。2026-10-09 已追加版本化环境装载、凭证版本与 usage_lease、证据关联 MemoryStore，当前契约见 <a href="environment-leases-memory.html">环境、租约与记忆</a>。Provider 真正短期凭证签发仍不支持，强租户隔离不在个人版范围。下文完整 Rust 草案不是当前接口的逐字段描述。</p>
+    </section>
+    <nav class="toc" aria-label="本页目录"><a href="#model">多项目关系</a><a href="#objects">领域对象</a><a href="#flow">申请流程</a><a href="#traits">策略与 Interface</a><a href="#environment">环境申请与注入</a><a href="#subscriptions">事实订阅</a><a href="#memory">长期记忆</a><a href="#surface">CLI / MCP</a><a href="#boundaries">安全边界</a><a href="#migration">实施顺序</a></nav>
+
+    <section class="section" id="model">
+      <span class="label">多项目关系</span><h2>一个控制面，多个项目，明确的账号绑定。</h2>
+      <div class="grid two">
+        <article class="card"><h3>用户拥有 Connection</h3><p>Connection 表示某个 Provider 的已认证外部身份，例如 DWS 的某个企业账号。同一用户可以有多个 Connection；V1 凭证留在 Server，不进入镜像、项目目录或 Agent 对话。后续显式批准的 workload 注入采用独立交付策略，不隐式复制凭证。</p></article>
+        <article class="card"><h3>Project 拥有 Grant</h3><p>Project A 与 B 可以显式获准使用同一个 Connection，但各自绑定不同的能力、资源范围和期限。A 登录成功、获得搜索权，不会让 B 自动获得调用权。</p></article>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>示例关系</th><th>外部账号</th><th>项目能力</th><th>结果</th></tr></thead><tbody>
+        <tr><td>Project A → Grant A → Connection 1</td><td>所有者的 DWS 企业账号</td><td>只读企业搜索；明确其实际可见范围</td><td>A 可以经 Broker 调用</td></tr>
+        <tr><td>Project B → 无 Grant</td><td>Connection 1 已经登录</td><td>未获批准</td><td>B 仍被拒绝，认证不代替授权</td></tr>
+        <tr><td>Project B → Grant B → Connection 2</td><td>另一企业或另一账号</td><td>另行确认的只读搜索</td><td>显式使用账号 2；不能静默改用账号 1</td></tr>
+      </tbody></table></div>
+      <p class="note">基本 Connection、ProjectCliBinding、申请、TTL、固定只读代理与最小审计已实现，首批 DWS / GitLab / Git 见 <a href="../modules/external-access/index.html">独立模块 V1</a>。DWS 搜索已使用明确绑定，不回退主机 profile。下文完整对象、细粒度范围与生命周期 trait 是目标设计，不等于当前所有字段和操作都已实现。</p>
+      <p class="section-copy">范围限制必须能被 Provider 或 Server 实际执行。若 DWS 企业搜索不能可靠限定到一个群、文档集合或组织子集，就不能宣称授予了这种窄权限；应拒绝该请求，或请用户另行批准真实的较宽范围。搜索关键词不是访问控制。</p>
+    </section>
+
+    <section class="section" id="objects">
+      <span class="label">领域对象</span><h2>不要用一个「授权」对象同时承担所有含义。</h2>
+      <div class="table-wrap"><table><thead><tr><th>对象</th><th>职责与核心字段</th><th>所有权 / 可见性</th></tr></thead><tbody>
+        <tr><td><code>ProviderDescriptor</code></td><td>Provider ID、认证方式、能力定义、可执行的资源约束、支持的交付方式。不包含任意 CLI 模板或用户提供的 executable。</td><td>运营者安装 / 配置的可信 Adapter；Agent 只能发现允许的能力。</td></tr>
+        <tr><td><code>ExternalConnection</code></td><td>ID、owner / tenant、provider、external identity、provider scopes、认证状态、checked_at、内部 credential_ref。</td><td>账号属于用户；公共 DTO 排除 credential_ref、Token、缓存路径和设备 secret。</td></tr>
+        <tr><td><code>ProjectBinding</code></td><td>项目与 Connection 的明确关联；可绑定仓库、环境与期限。</td><td>当前代码为 ProjectCliBinding；绑定不授予业务操作，不能用一个项目的绑定替另一个项目调用。</td></tr>
+        <tr><td><code>ProjectAccessRequest</code></td><td>project、requester、provider / connection hint、所需能力、资源约束、理由、交付方式、批准上限、超时与状态。</td><td>项目 Agent 可申请 / 查询 / 取消自己的请求；批准仅由被授权的所有者完成。</td></tr>
+        <tr><td><code>AuthenticationAttempt</code></td><td>request / provider 关联、公开 challenge、verified identity、deadline、状态。允许使用现有已认证 Connection 而不创建新 Attempt。</td><td>独立于 Agent Turn 存活；公开验证链接与用户码，隐藏 device_code、PKCE verifier 和 Token。</td></tr>
+        <tr><td><code>ProjectAccessGrant</code></td><td>project、connection、capability set、可执行资源约束、delivery、not_before / expires_at、approved_by、policy revision、revoked_at。</td><td>由 Server 保存。精确批准的内容与实际登录身份绑定；换账号须重新确认。</td></tr>
+        <tr><td><code>ResourceScope</code></td><td>具体群 / 会话、仓库、EDC project / study、dev/test/prod 环境及历史时间窗口。</td><td>Provider 或 Server 必须实际执行约束；当前 DWS 消息已有精确 target + [start,end)，不是所有 Provider 都有完整 ACL。</td></tr>
+        <tr><td><code>Approval</code></td><td>批准人、请求或操作摘要、精确资源 / workload、期限与权限版本；高风险操作可一次性绑定。</td><td>批准来自可信用户入口；外部消息、Skill 或 Agent 自述不能成为批准。通用 Approval / Capability 仍待实现。</td></tr>
+        <tr><td><code>CredentialRef</code></td><td>内部不透明引用，指向 Store 中的秘密或原生认证缓存。</td><td>不提供 MCP secret-get；普通配置引用与秘密引用不能混用。引用不是可以调用任意账号的 bearer 权限。</td></tr>
+        <tr><td><code>AccessAuditEvent</code></td><td>请求 / 批准 / 使用 / 拒绝 / 撤销的元数据、project / run / tool 关联、结果码、时间。</td><td>不保存原始凭证、原始 CLI stderr，也不默认记录外部搜索正文。</td></tr>
+        <tr><td><code>CredentialLease</code>（后续）</td><td>若 Provider 真正支持短期、可收窄凭证：绑定 workload、grant revision、到期、交付通道与撤销状态。</td><td>非 MVP 前提。不把长期 refresh token 或原始 API Key 复制后命名为「临时租约」。</td></tr>
+      </tbody></table></div>
+      <p class="section-copy">同一 owner / tenant 内，用户可以显式复用 Connection；跨 owner / tenant 默认拒绝。删除一个 Project 只撤销该项目的 Grant / 请求，不删除其他项目仍在使用的 Connection。停用 Connection 则阻断其所有绑定 Grant 的新调用，并让用户确认受影响项目。</p>
+      <p class="section-copy">认证凭证由内部 <code>CredentialStore</code> 保存，数据库只持有不透明引用。当前 private DWS 目录可作为本地存储后端的迁移基础，不等于已经有通用 Vault、加密密钥管理或生产租户隔离。</p>
+    </section>
+
+    <section class="section" id="flow">
+      <span class="label">申请与调用</span><h2>Feynman 负责跑流程，不负责替用户同意。</h2>
+      <div class="steps">
+        <article class="step"><strong>Agent 提出需求</strong><p>能力、范围、理由；Project / Principal 由 MCP 和 Server 注入，模型不能指定另一个项目或用户。</p></article>
+        <article class="step"><strong>Broker 评估</strong><p>已有有效 Grant 则直接就绪；否则提示缺少批准或登录。禁止默默扩大权限。</p></article>
+        <article class="step"><strong>用户认证与批准</strong><p>展示实际账号、资源范围、风险和期限；新登录得到身份后，明确确认最终绑定。</p></article>
+        <article class="step"><strong>生效后调用</strong><p>每次调用重新核对 Grant、Connection、实际资源、有效期与交付方式。返回结果，不返回凭证。</p></article>
+      </div>
+      <p class="section-copy">请求状态至少区分 <code>pending_approval</code>、<code>authentication_required</code>、<code>waiting_for_user</code>、<code>ready</code>、<code>denied</code>、<code>expired</code>、<code>cancelled</code>、<code>failed</code>、<code>interrupted</code>。<code>ready</code> 必须同时满足身份验证与项目授权，不等同于 DWS 当前的 <code>authorized</code> 登录完成状态。</p>
+      <p class="section-copy">批准与认证不强制固定先后：用户可先批准能力上限，再登录；也可选择已有 Connection 后批准。若验证所得账号 / 组织、Provider 实际范围与批准内容不一致，不能激活 Grant，必须再次确认。真实 Provider 要求更宽 consent 时必须披露，不能用 Feynman 窄请求遮盖它。</p>
+      <div class="note"><strong>有效权限 = 用户批准上限 ∩ 当前项目 Grant ∩ 外部账号实际权限 ∩ Provider 可执行约束。</strong><br>任一项无法验证，或执行方式不受支持，默认拒绝；<code>read_only</code> 标记或 Skill 文本本身不是授权保证。</div>
+      <p class="section-copy">请求需幂等与并发去重；按 Connection 串行刷新，防止 refresh rotation 冲突。认证 Attempt 由 Server 托管，Turn 结束不丢失；重启时明确标为可恢复或 interrupted，不假装重建了仍在运行的 OAuth 进程。旧状态查询是历史记录，实际调用需新鲜的验证结果。</p>
+      <p class="section-copy">Grant 到期或撤销阻断之后的新调用；已发出调用和外部副作用不能保证收回。长任务能取消则尽力取消。Provider Token 的撤销是独立步骤，需区分「Feynman 已禁用」和「Provider 已吊销」，不能把本地标记当成远端撤销成功。</p>
+    </section>
+
+    <section class="section" id="traits">
+      <span class="label">Rust trait + 组合式策略 · 最小实现 + 完整演进契约</span><h2>一个 Broker，小 Interface，不造巨型认证基类。</h2>
+      <p class="section-copy">External Access 是一个 deep module：调用者通过申请、查询、批准 / 撤销及受限调用这个小 Interface 使用它。认证协议、存储、策略与执行 Adapter 是内部 seams；只在确有行为差异时抽取 trait，不要求每个结构都创建一个空壳抽象类。</p>
+      <div class="table-wrap"><table><thead><tr><th>Interface / 策略</th><th>职责及可替换实现</th><th>当前状态</th></tr></thead><tbody>
+        <tr><td><code>ExternalAccessProvider</code></td><td>渠道 descriptor、身份与实际 scope 验证、支持的认证 / 交付方式、Provider 撤销能力；DWS / GitLab / Git / EDC / 云服务各自 Adapter。</td><td>已命名现有 Provider seam，保留 AuthenticatedCliProvider 兼容别名；完整远端撤销生命周期未实现。</td></tr>
+        <tr><td><code>AuthenticationStrategy</code></td><td>start / inspect / cancel / refresh；Device Code、OAuth 浏览器流程、PAT 安全导入、SSH、服务账号。返回公开挑战与状态，不返回秘密。</td><td>已实现 DeviceAuthentication 和 OwnerTokenAuthentication；PAT 不伪装为 device，refresh 不支持时明确拒绝。SSH / 服务账号未实现。</td></tr>
+        <tr><td><code>AccessPolicy</code></td><td>校验 principal、项目 / Agent、操作、资源、环境、期限、交付方式与风险；输出 deny / needs_approval / allow。</td><td>已实现 ProjectAccessPolicy，使用 Server 派生的 TrustedCall；Agent 能力与项目 Grant 取交集，复核 Binding / Connection / Scope。通用风险批准与 policy revision CAS 未实现。</td></tr>
+        <tr><td><code>CredentialStore</code></td><td>内部秘密保存、版本、读取、轮换与删除，不透明引用；可替换私有文件、Keychain、后续 Vault。</td><td>AccessStore / DWS 缓存继续用于 Server Proxy；业务秘密新增显式版本、macOS Keychain 与主动选择的私有文件 Adapter。无 secret-get、加密 Vault 或强租户存储。</td></tr>
+        <tr><td><code>CredentialDeliveryStrategy</code></td><td>决定秘密如何被使用：Server Proxy、指定进程 env、临时文件、真正短期凭证；批准内容绑定目标 workload。</td><td>已实现 ServerProxyDelivery；Environment Profile 的独立用户批准支持指定进程 env、验证 tmpfs 文件与 usage_lease，不能直接通过 Proxy 请求模式绕过批准。Provider 真正短期 Lease 仍 fail-closed。</td></tr>
+        <tr><td><code>ExternalToolAdapter</code></td><td>固定业务操作、参数 / 结果整理；CLI、HTTP、MCP 可作为 Adapter 实现，不能选择任意 executable。</td><td><a href="../../crates/feynman-core/src/external_tools.rs">已有 trait 与固定工具</a>；接收统一 AuthorizedCall 是演进目标。</td></tr>
+        <tr><td><code>ExecutionPolicy</code></td><td>约束实际执行位置、网络目的地、路径、运行身份与副作用；只读调查、本地构建、指定测试资源写入分开。</td><td>已实现 FixedCliExecution seam，可信 Adapter 构造固定 argv、env allowlist 与有界输出，不接受任意 shell。强沙盒出网和全工作负载策略未实现。</td></tr>
+        <tr><td><code>AuditSink</code></td><td>申请、批准、调用、拒绝、刷新、轮换、撤销与结果元数据；本地 JSONL / 数据库，后续集中审计。</td><td>已实现元数据 AuditSink；另保存 Agent / Source / Inbox 动作审计，不保存正文或原始 stderr。环境 / 使用租约的修订审计另行持久化；集中审计未实现。</td></tr>
+      </tbody></table></div>
+      <p>Feynman 用户认证属于 <code>IdentityProvider</code>，不是外部 Provider 登录。当前 local Principal / loopback 管理入口不等于远程用户认证或强多租户隔离。</p>
+      <p>可编译的最小接口和真实策略见 <a href="../../crates/feynman-server/src/external_access/security.rs">security.rs</a>；以下展开块保留较完整的目标签名，不能直接按草案调用当前 Server。</p>
+      <details><summary>Rust 组合草案 · 非当前可编译 / 已上线接口</summary>
+      <pre><code>// 设计草案：不是当前可编译或已上线的 API。
+#[async_trait]
+pub trait ExternalAccessProvider: Send + Sync {
+    fn descriptor(&amp;self) -&gt; ProviderDescriptor;
+    async fn verify_connection(
+        &amp;self, connection: &amp;PrivateConnectionHandle,
+    ) -&gt; Result&lt;VerifiedConnection&gt;;
+    async fn revoke_connection(
+        &amp;self, connection: &amp;PrivateConnectionHandle,
+    ) -&gt; Result&lt;RevocationOutcome&gt;; // unsupported / local_only / provider_revoked
+}
+
+#[async_trait]
+pub trait AuthenticationStrategy: Send + Sync {
+    async fn start(
+        &amp;self, context: &amp;TrustedAuthContext, intent: AuthIntent,
+    ) -&gt; Result&lt;AuthenticationProgress&gt;; // challenge 或已验证结果
+    async fn inspect(
+        &amp;self, context: &amp;TrustedAuthContext, attempt: &amp;AuthAttemptId,
+    ) -&gt; Result&lt;AuthenticationProgress&gt;;
+    async fn cancel(
+        &amp;self, context: &amp;TrustedAuthContext, attempt: &amp;AuthAttemptId,
+    ) -&gt; Result&lt;()&gt;;
+    async fn refresh(
+        &amp;self, connection: &amp;PrivateConnectionHandle,
+    ) -&gt; Result&lt;RefreshOutcome&gt;; // 支持情况与秘密留在内部
+}
+
+pub struct ExternalAccessBroker {
+    providers: ProviderRegistry,
+    authentication: AuthenticationRegistry,
+    repository: AccessRepository,
+    credential_store: Arc&lt;dyn CredentialStore&gt;,
+    policy: Arc&lt;dyn AccessPolicy&gt;,
+    delivery: DeliveryRegistry,
+    execution_policy: Arc&lt;dyn ExecutionPolicy&gt;,
+    audit: Arc&lt;dyn AuditSink&gt;,
+}
+
+// Broker 的职责：request / inspect / owner_approve / owner_revoke。
+// Broker 的调用边界：validate_and_invoke(context, tool, arguments)。
+// 内部 AuthorizedCall 必须绑定 Project + Grant revision + Connection
+// + 已核验工具参数 / 资源 / workload / 交付方式，不接受 Agent 伪造。
+// Provider、Tool Adapter 和 Delivery Adapter 都不能跳过公共 policy。</code></pre></details>
+      <div class="steps"><article class="step"><strong>可信调用上下文</strong><p>用户 / tenant / project / Agent 来自 Server，不接受模型自报身份。</p></article><article class="step"><strong>公共策略判断</strong><p>Connection 身份 → Binding → Grant → Scope → 风险批准 → ExecutionPolicy。</p></article><article class="step"><strong>受限交付与执行</strong><p>Delivery Strategy 选择 Proxy 或已批准注入；Tool Adapter 执行已验证操作。</p></article><article class="step"><strong>结果与审计</strong><p>返回脱敏业务结果；审计记录关联权限版本，不记录秘密。</p></article></div>
+      <p class="section-copy">目标业务调用路径：Project MCP → Broker 校验 → 交付策略 / 内部绑定的 Tool Adapter → CredentialStore / Provider → 外部服务。默认返回结果而非凭证；批准 workload 注入时也不在 MCP 中返回秘密。Broker 在操作开始前重新检查最新 policy revision，避免早先的「已获权」快照绕过撤销。</p>
+      <p class="section-copy">Provider 声明支持哪些认证方式和交付方式；Device、OAuth 回调、用户安全录入 API Key 可以映射同一生命周期，但具体支持取决于 Adapter。API Key 要在所有者的专用输入通道录入，不要求用户把密钥粘进 Chat 或普通 CLI 参数。</p>
+    </section>
+
+    <section class="section" id="environment">
+      <span class="label">ProjectEnvironment · 初版已实现</span><h2>申请变量，不等于获取秘密；批准注入必须说明目标。</h2>
+      <p class="note">版本化 Profile、stdin 秘密导入、Keychain / 显式私有文件、申请批准、指定进程 / tmpfs 装载与 usage_lease 已实现；具体操作与限制见 <a href="environment-leases-memory.html#environment">当前环境装载契约</a>。下文 Provider 真正短期签发是可选目标，不是已支持能力。</p>
+      <p>ProjectEnvironment 管理环境声明与运行装载，复用 Broker 的申请与批准，不另建一套凭据系统。应用 env 与模型服务认证、DWS 账号缓存分开；平台不会把操作者整份 env 隐式复制给项目。</p>
+      <div class="table-wrap"><table><thead><tr><th>类别</th><th>保存与交付</th><th>Agent 可见性</th></tr></thead><tbody>
+        <tr><td>普通配置</td><td>端口、运行模式等进入版本化项目配置。</td><td>按项目权限可读，不把 Token 错标成普通配置。</td></tr>
+        <tr><td>敏感配置</td><td>API Key / 密码留在 CredentialStore；项目配置只存受控引用。</td><td>默认只见获准变量名、用途与状态，不提供 secret-get / 全量 env 导出。</td></tr>
+        <tr><td>运行时注入</td><td>批准后注入指定进程 env 或临时私有文件；绑定 project / Workspace / workload、秘密版本、权限版本与到期。</td><td>同一执行身份通常可读取注入的秘密；这是显式暴露风险，不是 Proxy 的等价安全性。</td></tr>
+        <tr><td>真正短期凭证</td><td>仅 Provider 支持 TTL、audience / scope 收窄时签发 CredentialLease。</td><td>不能把长期 Key 的本地使用期限描述为 Provider 侧自动失效。</td></tr>
+      </tbody></table></div>
+      <p>申请声明至少包含：<code>变量名 / 类型、用途、测试或生产环境、目标 workload、资源权限、交付方式、有效期</code>。所有者查看实际影响再批准。变量来自可信模板与 allowlist，不允许模型注入 PATH、动态加载器或运行时启动参数来改变可信 Executor 的行为。</p>
+      <div class="steps"><article class="step"><strong>提出 EnvSpec</strong><p>引用所需配置与原因，不要求 Agent 上传或粘贴已有秘密。</p></article><article class="step"><strong>批准与安全录入</strong><p>用户确认目标和范围；秘密通过私有 stdin / 专用通道进入 Store。</p></article><article class="step"><strong>即时校验并注入</strong><p>启动前复核 Grant revision、workload 归属、期限与交付方式；失败时不落入镜像或持久项目卷。</p></article><article class="step"><strong>使用与清理</strong><p>审计版本与结果，关闭进程 / 移除文件；根据 Provider 能力另行撤销或轮换。</p></article></div>
+      <p class="note warning">Agent 控制的进程可读取其 env / 文件，也可复制秘密；脱敏和 chmod 不能保证秘密对该 Agent 不可见。能 Proxy 的操作优先 Proxy；允许直接注入时缩短有效期、收窄权限并隔离身份 / 网络。容器快照、备份、崩溃日志和进程继承也须纳入秘密暴露范围。</p>
+      <p>公开日志、Prompt、Observation、记忆与 argv 不记录秘密；低熵密码不生成公开 hash。平台装载审计只记录引用、版本与目标，禁止对平台托管进程做无约束 env 继承；Agent 自行读取或复制后的外泄仍需执行身份与网络隔离应对。模型 Home 与 Broker 环境保持独立；通用 ProjectEnvironment 的当前装载约束见环境、租约与记忆页面。</p>
+      <details><summary>撤销的四种结果必须分开显示</summary><ul><li>撤销 Grant：阻止未来调用 / 新注入，不能抹掉已有 env。</li><li>停止 workload：中止可管理进程及其派生进程；平台需验证实际停止，不能只删租约记录。</li><li>移除临时文件：防止后续读取，不保证清除内存、复制品或已开文件描述符。</li><li>Provider 撤销 / 轮换：实际 Key 失效才计远端成功；不支持时明确 local_only / unsupported。跨项目共享凭据的全局失效须披露影响。</li></ul></details>
+    </section>
+
+    <section class="section" id="subscriptions">
+      <span class="label">ObservationSource · 单 Agent 初版已实现</span><h2>外部事实像 RSS：可订阅、可回溯，不自带权限。</h2>
+      <p><code>ObservationSource</code> Adapter 负责 poll / 接收事件、来源与游标；<code>Subscription</code> 声明目标 Agent、Source Scope、过滤条件、历史补查与保留策略。Source 与 Subscription 不是账号 Connection；采集身份和资源许可仍由 External Access Broker 判断。</p>
+      <p>主路径：获权采集 → 带来源 / 时间 / ID 的 Observation 长期记录 → Schedule 按整条规则开窗合并 → Occurrence / Delivery → Agent Inbox。空闲时启动 Run，忙时按运行时能力 steer / 插队；投递未知结果必须对账，不能靠重复 Prompt 冒充可靠恢复。当前先一条规则绑定一个 Agent，不新增广播模型。</p>
+      <p>新增、启用和扩大订阅范围由用户控制；每次 poll / 补查都复核有效身份与权限，长连接权限失效应中止并记录空窗。入箱与实际交给 Agent 前也复核当前交付权限；撤权后的待投递事实应暂停 / 隔离，不自动补发。用户可以明确批准继续使用既有快照，但这不是默认继承。</p>
+      <p>外部消息是证据数据，不是系统指令、提权批准或待办优先级的最终权威。过滤用于路由，不能代替资源 ACL。采集完整性、去重和补查水位保存；正文与认证审计分开，按项目权限与保留 / 删除策略管理，不无限保存全部消息。</p>
+      <p class="note">已实现 manual / dws_messages / dws_events、Source ID 独立历史与游标、范围采集留证、整体固定窗口和 Inbox queue / steer。不同时间登记同一渠道也生成新分区，资源与绑定不可原地变更；暂停不删除记录。Agent 通过 feynman_observations MCP 在本机分页查询，只能访问自身来源；DWS 检索继续复核当前授权。实时断线自动补查、通用过滤 DSL 与保留清理仍待实现。具体命令见 <a href="agent-schedules.html#cli">Agent 与 Schedule CLI</a>。</p>
+    </section>
+
+    <section class="section" id="memory">
+      <span class="label">Project Memory · 初版已实现 / 完整目标设计</span><h2>长期记忆保存判断与证据，不保存凭据。</h2>
+      <div class="table-wrap"><table><thead><tr><th>长期状态</th><th>保存内容</th><th>访问约束</th></tr></thead><tbody>
+        <tr><td>Observation 历史</td><td>不可静默改写的原始事实、采集时间、来源 ID、版本 / hash 与完整性限制。</td><td>项目内受控保存；原始消息可能含敏感业务数据，不能只因不含 Token 就视作公开。</td></tr>
+        <tr><td>Agent 记忆与判断</td><td>事实 / 推断分离的摘要、决策、待确认问题、证据引用；标记事实修订与判断失效。</td><td>目标为按 project / agent 隔离；Workspace 共享不等于会话记忆与全部权限共享。</td></tr>
+        <tr><td>待办与优先级</td><td>关联来源的任务、建议优先级、执行状态与用户决策，重复通知可合并 / 更新。</td><td>Agent 可在已授权范围建议和整理；新增权限、部署或其他副作用仍重新过 policy，RSS 通知不直接授权执行。</td></tr>
+        <tr><td>环境描述</td><td>非敏感配置、EnvSpec 状态与受控装载版本标识。</td><td>不保存 Token、密码、完整 env 或可绕过权限的私有 handle；秘密真值留在 CredentialStore。</td></tr>
+      </tbody></table></div>
+      <p>会话 JSONL、结构化业务记忆和远端 Workspace 是不同持久层，不能只备份容器就宣称恢复 Agent。权限变化不自动擦除历史事实；删除 / 保留策略需覆盖数据库、JSONL、摘要和备份，且无法保证模型忘掉已进入上下文的内容。历史敏感信息应停止继续投递 / 检索并记录处理状态，不承诺自动遗忘。</p>
+      <p class="note">本机已保存 Observation / Capture / Inbox、各 Agent 会话与 JSONL，以及 <a href="environment-leases-memory.html#memory">MemoryStore</a> 的事实 / 推断 / 决策 / 待办、递归证据权限、修订历史与置顶装载。删除目前是逻辑隐藏，不做物理保留清理或备份擦除。MCP 固定 Agent，替代身份不继承旧私有记忆；这不是同一 OS 用户或不可信 Agent 之间的强隔离。</p>
+    </section>
+
+    <section class="section" id="surface">
+      <span class="label">使用入口</span><h2>Agent 负责申请，所有者负责批准。</h2>
+      <div class="table-wrap"><table><thead><tr><th>入口（目标设计）</th><th>操作</th><th>可信角色</th></tr></thead><tbody>
+        <tr><td><code>feynman_access</code> MCP</td><td>discover / request / status / list / cancel；返回链接、公开状态与下一步</td><td>Server 绑定的项目 Agent；不可 approve、不可读取 secret</td></tr>
+        <tr><td><code>feynman access …</code> CLI</td><td>查看多项目申请、明确批准 / 拒绝、撤销项目 Grant</td><td>本地所有者管理入口；关键写操作需明确确认，不由 <code>--json</code> 自动同意</td></tr>
+        <tr><td><code>feynman connections …</code> CLI</td><td>查看脱敏账号、添加认证、检查登录态、禁用连接、查看受影响项目</td><td>账号所有者；敏感输入使用独立通道</td></tr>
+        <tr><td>已有业务 MCP 工具</td><td>继续调用固定 DWS 搜索等能力，后续由 Broker 解析确切 Connection 与 Grant</td><td>已获明确项目权限的 Agent</td></tr>
+      </tbody></table></div>
+      <p class="note warning">上表是完整演进契约。当前可执行的是 <code>feynman access providers / status / request / bind / unbind / connections</code>、既有 <code>external-tools</code> 与 <code>dws-auth</code>；MCP <code>feynman_access</code> 仅 providers / status / request，尚无 cancel / approve。Agent 发起 device 登录仍需所有者授予 <code>dws.auth.device</code>。</p>
+      <p class="section-copy">平台应允许 Agent 提交不产生外部副作用的权限需求，给所有者排队审批；启动真实登录 / 创建云资源 / 使用账号需对应批准。申请发现接口不能枚举其他所有者账号，不得向项目返回无权读取的 Connection 名称。</p>
+    </section>
+
+    <section class="section" id="boundaries">
+      <span class="label">不可混淆的边界</span><h2>代理调用先落地，凭证下发单独设计。</h2>
+      <div class="grid two">
+        <article class="card"><span class="status">V1 已实现 · Proxy</span><h3>Server 代调用</h3><p>Agent 获得工具使用权；真实凭证留在 Server，固定 dws / glab / git 调用使用明确账号。DWS 新 device 缓存已可显式登记和绑定；GitLab / Git 只读不包括写操作。</p></article>
+        <article class="card"><span class="status future">后续 · 显式交付策略</span><h3>容器内 CLI 使用</h3><p>默认 Proxy；确需容器认证时由用户批准指定 workload 的 env / 临时文件注入并接受可读风险。真正短期 Lease 仅在 Provider 支持时提供；长期 Key 注入不伪装成 Lease。不支持安全交付时拒绝或继续 Proxy。</p></article>
+      </div>
+      <p class="section-copy">外部权限不代替本地 shell 审批、Workspace 创建权限、模型服务认证或 Provider 原生同意。gcloud / 部署类能力若后续接入，应按具体资源动作和副作用定义能力；申请认证本身不等于允许创建计费资源。</p>
+      <p class="section-copy">当前 MCP 的项目上下文约束及私有目录是可信个人 MVP 的防误用边界。项目 Agent 若能读到所有者的认证文件或运行管理 CLI，就可能绕开逻辑 Grant；项目隔离、权限分离的管理通道、认证后的远程传输和不可信租户隔离仍需独立加固。</p>
+      <p>Provider 不能接受 Agent 任意指定的 binary、shell 模板、OAuth issuer、回调地址或目标 host。新增渠道使用运营者可信配置、固定参数、目标主机 / 仓库 allowlist、TLS 校验和重定向限制；逐项检查 SSRF、命令注入、路径逃逸与跨账号混用。只读标记、项目 Skill 中的 allowed-tools 与“多数操作允许”均不能代替对真实资源和副作用的批准。</p>
+    </section>
+
+    <section class="section" id="migration">
+      <span class="label">基础 V1 已有 · 后续分步实施</span><h2>先抽取共同策略，再接环境与订阅。</h2>
+      <ol>
+        <li>引入 Connection、Request、Grant 数据模型与内部 Provider trait；保持旧 DWS API 的兼容映射，不默认为历史 Grant 任选一个外部账号。</li>
+        <li>抽取 DWS 专用认证为 Provider；验证真实身份，把成功的 device 缓存提升为显式 Connection。遗留主机 profile 仅由所有者显式登记 / 确认，不自动迁移个人凭证。</li>
+        <li>让 DWS 搜索从 Broker 获得绑定 Connection，清除默认 profile 回退；接通项目申请、用户批准和逐次调用校验。</li>
+        <li>基本到期 / 撤销 / 身份校验和审计已经接入；当前包括 DWS、GitLab、Git、Slate、Drlee，新增固定 Sandbox clone。使用租约已实现，但 Provider 真正短期签发、动态加载与生产多租户仍不支持。</li>
+        <li>用 DWS Device 与 GitLab PAT 导入的真实差异抽取 AuthenticationStrategy；把通用 AccessPolicy 从 Broker 内聚出来，保持公开 CLI / MCP 兼容。</li>
+        <li>统一 CredentialStore 的版本 / 私有引用与刷新同步；再实现 ProjectEnvironment / DeliveryStrategy，先有明确 workload 的测试环境注入，不直接做生产通用租约。</li>
+        <li>让 ObservationSource / Subscription 与 Project Memory 共用有效权限、保留与审计规则；投递继续归属 Schedule / Inbox，不塞进认证 Provider。</li>
+      </ol>
+      <p class="section-copy">关键验收：A 已登录而 B 未获权时 B 被拒绝；共享 Connection 的 A / B 撤销互不扩大影响；绑定账号失效不退回主机 profile；账号切换 / 范围不可执行时拒绝；认证成功不自动批准；取消、重启与并发刷新状态一致；公共 API / 日志 / Workspace 不泄漏 secret；到期和 policy revision 在真实调用前生效。</p>
+      <p>已完成离线验收：来源分区／分页／重启、跨项目及替代 Agent 拒绝、固定开窗、unknown 不重放、steer 不新建 Run、撤权停止监听／检索、部分补查不推进游标、绑定切换不改 Source、凭据字段脱敏与旧数据库迁移。见 <a href="../../scripts/smoke/test_automation.py">公开接口测试</a>和 <a href="../../crates/feynman-server/src/store/automation_tests.rs">持久化测试</a>。指定进程 env / tmpfs 装载、权限 revision、usage_lease 与通用记忆的公开接口测试已追加；备份清理、Provider 真正短期签发仍不支持。强租户隔离不在当前个人版范围。</p>
+      <p class="section-copy">当前代码：<a href="../../crates/feynman-core/src/external_access.rs">公开领域对象</a>、<a href="../../crates/feynman-server/src/external_access/mod.rs">External Access Broker</a>、<a href="../../crates/feynman-server/src/external_access/providers/dws/authorization.rs">DWS device</a>、<a href="../../crates/feynman-server/src/external_access/providers/dws/search.rs">搜索 Adapter</a>。2026-10-09 已完成 Slate / GitLab / Drlee 真实授权及 Agent 读取、Sandbox 拉仓库和本地测试；无推送、部署或外发消息。见 <a href="../modules/external-access/index.html#real-smoke">实测记录与边界</a>。</p>
+    </section>
+  </main>
+  <footer><a href="../index.html#view=projects&amp;node=access">← 多项目架构 / 权限 Broker</a><span>Feynman Docs · 策略与安全目标设计 / 2026-10-08</span></footer>
+</div>
+</body>
+</html>

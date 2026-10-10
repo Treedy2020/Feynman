@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Cohort 本地工作台验证 · Feynman Docs</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="../assets/site.css"><script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="cohort-workbench" data-docs-root=".."><div class="page"><header class="topbar"></header><main id="content">
+  <section class="hero"><span class="doc-status">2026-10-09 · C-01 · 分析完成，发现一项日志权限缺陷</span><h1>在真实项目工作台中分析 Cohort。</h1><p class="lead">本机 Rust Server 管理会话和事实流，Codex 使用公司模型，原生代码执行位于独立本地 OpenSandbox。约 10 分 04 秒完成一次真实分析；方向初步合理，链路不是全绿，不实施业务修改。</p><p><a href="http://127.0.0.1:4318/console/#project=prj_4a609d36d1d64057aa820a775beedb2d&amp;view=chat">打开 Cohort 项目对话 ↗</a></p></section>
+  <nav class="toc" aria-label="本页目录"><a href="#input">输入与权限</a><a href="#chain">实际链路</a><a href="#direction">方向评估</a><a href="#reproduce">复现</a><a href="#limits">边界</a></nav>
+  <section class="section" id="input"><span class="label">C-01 · 独立新项目</span><h2>消息、附件与代码保持时间边界。</h2>
+    <table><thead><tr><th>输入</th><th>本轮配置</th></tr></thead><tbody>
+      <tr><td>项目</td><td>Cohort · 历史迭代测试 C-01；独立 Agent、Thread、持久命名卷和渠道历史，不复用 EDC 会话。</td></tr>
+      <tr><td>上游基线</td><td><code>a8cd723c4f420ff18f487cdf1bb4b12d4df54bbc</code>（v0.9.3）；截止 <code>2026-09-22 14:05 +08:00</code>。</td></tr>
+      <tr><td>历史事实</td><td>杨睿仪 09-21 两条模板反馈、09-22 的模板文件消息，以及已脱敏的邮件模板文本。精选真实资料，不是实时 DWS 调用或完整聊天历史。</td></tr>
+      <tr><td>三个渠道</td><td>冻结反馈、脱敏附件、明确标记的操作员测试通知。各自独立 source ID / 历史；Schedule 合并变化通知后，Agent 自行查询正文。</td></tr>
+      <tr><td>Workspace</td><td>949 个文件；只带固定 SHA 的源码和同版本 <code>clinical-eligibility-review</code> Skill。另有明确标记的两份操作员工具/边界指引，不含预期答案。</td></tr>
+      <tr><td>排除项</td><td>上游 Git 历史、remote、未来版本、评估端答案、生产 env、临床示例与患者文件；额外文件排除清单记录在私有 seed manifest。</td></tr>
+      <tr><td>认证边界</td><td>只配置历史来源 Scope 与 <code>external.access</code> 状态查看；不登录 DWS、不迁移凭据、不赋予实时消息读取或外部写权限。</td></tr>
+      <tr><td>环境</td><td>公开 Node 22.20.0 / TypeScript 5.9.3，仅装在项目 tools 目录；两个审批后的固定执行配置、600 秒 usage lease。没有生产数据库或业务密钥。</td></tr>
+    </tbody></table>
+    <p>原 DOCX 的 SHA-256 与既往事实包一致；只提供去除临床示例的文本。该 hash 证明采集到的字节，不证明附件在历史截止点之后从未编辑。原消息的编辑、撤回未重建。公开文档不包含聊天正文、账号 ID、模板内容或完整原生日志。</p>
+  </section>
+  <section class="section" id="chain"><span class="label">实际状态 · 非模拟截图</span><h2>从来源窗口到长期会话。</h2>
+    <table><thead><tr><th>能力</th><th>实际结果</th><th>证明边界</th></tr></thead><tbody>
+      <tr><td>项目 / Workspace</td><td>已创建，seed 成功；运行前后独立校验 949 个文件、原事实、Git 和凭据缺失均通过。</td><td>本地 Docker，不是 gVisor；源码只读为任务约定 + 完整性检查。</td></tr>
+      <tr><td>Source / Schedule / Inbox</td><td>20 秒整条 Schedule 聚合；一个 occurrence、一个 accepted Inbox、一个 Run。接受后暂停两个 Schedule。</td><td>手工导入的冻结渠道；没有宣称后台真实 DWS 监听通过。</td></tr>
+      <tr><td>公司模型</td><td>原生 turn context 确认 <code>gpt-5.6-terra / max</code>，执行目录 <code>/workspace</code>。</td><td>凭据和会话留在本机控制端，模型凭据不进入 Sandbox。</td></tr>
+      <tr><td>Agent 查询与分析</td><td>Run completed；37 次工具调用，其中 5 次观测查询，已读取分离的反馈和附件并完成方案。</td><td>包含 4 次失败调用：2 次 Shell 调查、2 次环境工具；未将失败改写成成功。</td></tr>
+      <tr><td>环境 / 长期记忆</td><td>Agent 自行执行已批准离线探针，任务 returncode=0；已写一条 Agent-scoped、未确认、带基线与渠道证据的推断记忆。</td><td>前端两个真实基线模块执行成功；后端因缺少 pydantic 未运行；Agent MCP 日志读取被拒，详见下文。</td></tr>
+      <tr><td>可视化</td><td>13 个工作台页面通过只读真实浏览器检查；无页面脚本错误。</td><td>未在此项目进行额外 UI CRUD 或发布操作。</td></tr>
+    </tbody></table>
+  </section>
+  <section class="section" id="direction"><span class="label">评估端 · 不提供给被测 Agent</span><h2>识别已经支持的部分，再决定最小补强。</h2>
+    <p>采用 <a href="historical-source-map.html#cohort-template">既有 C-01 来源与版本映射</a>和<a href="iteration-direction.html#scoring">方向评估标准</a>，人工阅读方案并独立核对基线代码；不是关键词自动评分，也不是 owner 已确认的正式 Pass。</p>
+    <table><thead><tr><th>维度</th><th>独立核对</th><th>判定边界</th></tr></thead><tbody>
+      <tr><td>需求与来源</td><td>正确关联两条反馈与模板附件，区分事件时间、导入时间和测试通知；没有把测试通知当业务需求。</td><td>仅三条精选消息，缺少全产品适用范围确认。</td></tr>
+      <tr><td>已有支持</td><td>正确发现同版本 Skill 与 <code>runner._prompt</code> 已要求四段骨架，<code>EmailMessagePayload</code> 已有 subject/body/requestedMaterials 和结论一致性校验。</td><td>没有机械重复实现已存在的模板提示。</td></tr>
+      <tr><td>合理迭代方向</td><td>若 owner 确认硬格式要求，建议新 Run 使用版本化四段结构校验，保留旧报告兼容；不重写审核运行链路，不把模板的特异阈值当全局事实。</td><td>结构门禁是有依据的建议，不是原消息明确要求；先确认硬/软规范及新旧路径范围。</td></tr>
+      <tr><td>验收与替代</td><td>包含模板缺段/乱序、阶段结尾、旧报告兼容、修订绕过校验等正反验收；列出零代码人工参考、轻量校验、结构化字段等分层替代。</td><td>后端验证码行为尚未实际运行；各生成/导出路径的一致性仍需真实应用回归。</td></tr>
+      <tr><td>诚实执行与记忆</td><td>真实转译并执行 <code>report-focus-targets.ts</code> 和 <code>report-editable-targets.ts</code>；邮件三个目标、正文替换、焦点定位和不存在的分段目标均有断言。结论留在未确认 Agent 记忆。</td><td>没有把合成前端探针、缺失 Python 依赖或不可读日志宣称为完整应用验证。</td></tr>
+    </tbody></table>
+    <p class="note">本轮支持“能基于当前 Scope、分离渠道和固定代码提出合理方向”，不证明已能正确实现、部署或稳定自维护。资料已提供/未审阅/缺失等细分状态、完整输出一致性和配对反例仍待补测。</p>
+    <h3>发现的 Feynman 缺陷：任务完成后，Agent 无法读取日志。</h3>
+    <p>同一项目、Agent、有效租约与相同 workload：用户 CLI 日志读取成功，正确参数 <code>{"id":"work_..."}</code> 的 Agent stdio MCP 请求稳定被拒。只读对照未启动新任务、未重新调用模型。租约当时仍有效，任务已完成，排除了到期和缺失日志。</p>
+    <p>根因在 <code>crates/feynman-server/src/resources/environment.rs</code>：<code>workload.logs</code> 调用 <code>check_lease</code>，后者要求 <code>state == active</code>；后台对账将结束任务设为 <code>completed</code> 后，Agent 读日志也被拒。Owner 路径不经过这项检查。MCP 又把上游非 2xx 折叠成通用拒绝，Agent 不能辨明原因。</p>
+    <p>建议将“继续执行/续租许可”和“读取本 Agent 已结束任务的日志许可”拆开，保留项目、身份、审批 revision、有效期、撤权和实例校验；不要简单移除授权检查。本轮只诊断并留证，未修改后端权限行为。Agent 读取了自身探针结果文件完成分析，原失败记录保留。</p>
+  <section class="section" id="reproduce"><span class="label">显式项目 · 无自动重试</span><h2>配置与证据分开保存。</h2>
+    <p><code>scripts/opensandbox/cohort_workbench.py</code> 配置明确选择的全新 C-01 项目，默认不启动模型；<code>cohort_workbench_test.py verify / start / capture</code> 分别做完整性检查、单次 Schedule 投递和完成后取证。脚本拒绝覆盖既存证据或重复提交测试 Prompt。<code>scripts/smoke/cohort_environment_log_probe.py</code> 在租约有效期间复现 owner/Agent 日志差异，不发起工作负载。</p>
+    <p>详细消息、snapshot、授权请求、日志、方案与核验结果保存在私有目录 <code>.feynman/evaluation-evidence/20261009-cohort-local-workbench</code>，不提交到仓库。项目 ID <code>prj_4a609d36d1d64057aa820a775beedb2d</code>；Run ID <code>run_efdd6c268a9b40f6bc1b9be14531c3cd</code>。</p>
+  </section>
+  <section class="section" id="limits"><span class="label">本轮不验证</span><h2>分析能力不等于完整自维护。</h2><ul><li>只运行 C-01 单例；不代表 C-02 / C-03、稳定通过率、多 Agent 或恢复能力已验证。</li><li>未运行完整应用 E2E、临床审核、生产数据库访问、推送、部署、tag 或外部发消息。</li><li>只有项目内公开工具安装与离线探针，无业务秘密注入；usage lease 不等于 provider credential lease。</li><li>保留项目与卷供用户后续测试；Workspace 有租期，停容器后仍需恢复/续租，不是无限常驻服务。</li></ul></section>
+</main></div></body></html>

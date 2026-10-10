@@ -10,11 +10,45 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Mutex;
 
+mod automation;
+#[cfg(test)]
+mod automation_tests;
+mod feed;
+mod management;
+#[cfg(test)]
+mod management_tests;
+mod resources;
+mod notifications;
+mod stream_state;
+mod schedule_inputs;
+
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
 }
 
 impl SqliteRepository {
+    /// MCP never initializes or migrates beneath a running server; it is a reader only.
+    pub fn open_existing(path: impl AsRef<Path>) -> PlatformResult<Self> {
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(storage_error)?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(storage_error)?;
+        connection
+            .query_row("SELECT COUNT(*) FROM project_agents", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(|_| {
+                PlatformError::Conflict(
+                    "Agent registry requires a server upgrade/restart before MCP can connect"
+                        .into(),
+                )
+            })?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
     pub fn open(path: impl AsRef<Path>) -> PlatformResult<Self> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)
@@ -29,6 +63,21 @@ impl SqliteRepository {
             .map_err(storage_error)?;
         connection.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS attention_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS attention_reads (
+                tenant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                notification_id TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, user_id, notification_id)
+            );
+            CREATE INDEX IF NOT EXISTS attention_tenant_sequence ON attention_events (tenant_id, sequence);
             CREATE TABLE IF NOT EXISTS tenants (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -64,6 +113,17 @@ impl SqliteRepository {
                 PRIMARY KEY (tenant_id, project_id, tool_id)
             );
             CREATE INDEX IF NOT EXISTS tool_grants_by_project ON tool_grants(tenant_id, project_id);
+            CREATE TABLE IF NOT EXISTS dws_authorizations (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id),
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                user_id TEXT NOT NULL REFERENCES users(id),
+                status TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS one_pending_dws_authorization
+              ON dws_authorizations(tenant_id, project_id)
+              WHERE status IN ('preparing', 'waiting_for_user');
             CREATE TABLE IF NOT EXISTS agent_sessions (
                 id TEXT PRIMARY KEY,
                 tenant_id TEXT NOT NULL REFERENCES tenants(id),
@@ -128,6 +188,9 @@ impl SqliteRepository {
             INSERT OR IGNORE INTO tenant_memberships(tenant_id, user_id, role) VALUES ('local', 'local-user', 'owner');
             ",
         ).map_err(storage_error)?;
+        management::migrate(&connection)?;
+        automation::migrate(&connection)?;
+        resources::migrate(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -137,6 +200,109 @@ impl SqliteRepository {
         self.connection
             .lock()
             .map_err(|error| PlatformError::Storage(error.to_string()))
+    }
+
+    pub fn list_dws_authorizations(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+    ) -> PlatformResult<Vec<feynman_core::DwsAuthorization>> {
+        self.get_project(principal, project_id)?;
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT metadata_json FROM dws_authorizations WHERE tenant_id = ? AND project_id = ? AND user_id = ? ORDER BY rowid DESC",
+        ).map_err(storage_error)?;
+        let rows = statement
+            .query_map(
+                params![principal.tenant_id, project_id, principal.user_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(storage_error)?;
+        rows.map(|row| {
+            serde_json::from_str(&row.map_err(storage_error)?)
+                .map_err(|error| PlatformError::Storage(error.to_string()))
+        })
+        .collect()
+    }
+
+    pub fn get_dws_authorization(
+        &self,
+        principal: &Principal,
+        project_id: &str,
+        id: &str,
+    ) -> PlatformResult<feynman_core::DwsAuthorization> {
+        self.get_project(principal, project_id)?;
+        let json: String = self.connection()?.query_row(
+            "SELECT metadata_json FROM dws_authorizations WHERE tenant_id = ? AND project_id = ? AND user_id = ? AND id = ?",
+            params![principal.tenant_id, project_id, principal.user_id, id],
+            |row| row.get(0),
+        ).optional().map_err(storage_error)?.ok_or(PlatformError::NotFound)?;
+        serde_json::from_str(&json).map_err(|error| PlatformError::Storage(error.to_string()))
+    }
+
+    pub fn insert_dws_authorization(
+        &self,
+        principal: &Principal,
+        authorization: &feynman_core::DwsAuthorization,
+    ) -> PlatformResult<()> {
+        self.get_project(principal, &authorization.project_id)?;
+        self.connection()?.execute(
+            "INSERT INTO dws_authorizations(id, tenant_id, project_id, user_id, status, metadata_json) VALUES (?, ?, ?, ?, 'preparing', ?)",
+            params![authorization.id, principal.tenant_id, authorization.project_id, principal.user_id,
+                serde_json::to_string(authorization).map_err(storage_error)?],
+        ).map_err(storage_error)?;
+        Ok(())
+    }
+
+    /// Compare-and-swap prevents completion from overwriting cancellation/restart recovery.
+    pub fn update_dws_authorization(
+        &self,
+        principal: &Principal,
+        authorization: &feynman_core::DwsAuthorization,
+        expected: &feynman_core::DwsAuthorizationStatus,
+    ) -> PlatformResult<bool> {
+        let status = |value: &feynman_core::DwsAuthorizationStatus| -> PlatformResult<String> {
+            Ok(serde_json::to_value(value)
+                .map_err(storage_error)?
+                .as_str()
+                .unwrap()
+                .to_owned())
+        };
+        let changed = self.connection()?.execute(
+            "UPDATE dws_authorizations SET status = ?, metadata_json = ? WHERE tenant_id = ? AND project_id = ? AND user_id = ? AND id = ? AND status = ?",
+            params![status(&authorization.status)?, serde_json::to_string(authorization).map_err(storage_error)?,
+                principal.tenant_id, authorization.project_id, principal.user_id, authorization.id, status(expected)?],
+        ).map_err(storage_error)?;
+        Ok(changed == 1)
+    }
+
+    pub fn interrupt_dws_authorizations(&self) -> PlatformResult<()> {
+        let connection = self.connection()?;
+        let records: Vec<(String, String)> = {
+            let mut statement = connection.prepare(
+                "SELECT id, metadata_json FROM dws_authorizations WHERE status IN ('preparing', 'waiting_for_user')",
+            ).map_err(storage_error)?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+        };
+        for (id, json) in records {
+            let mut record: feynman_core::DwsAuthorization =
+                serde_json::from_str(&json).map_err(storage_error)?;
+            record.status = feynman_core::DwsAuthorizationStatus::Interrupted;
+            record.error_code = Some("SERVER_RESTARTED".into());
+            record.verification_uri = None;
+            record.verification_uri_complete = None;
+            record.user_code = None;
+            record.updated_at = Utc::now();
+            connection.execute(
+                "UPDATE dws_authorizations SET status = 'interrupted', metadata_json = ? WHERE id = ? AND status IN ('preparing', 'waiting_for_user')",
+                params![serde_json::to_string(&record).map_err(storage_error)?, id],
+            ).map_err(storage_error)?;
+        }
+        Ok(())
     }
 
     pub fn recover_after_server_restart(&self) -> PlatformResult<usize> {
@@ -180,12 +346,48 @@ impl SqliteRepository {
             "UPDATE agent_sessions SET status = 'degraded', updated_at = ? WHERE status IN ('ready', 'provisioning')",
             [&now],
         ).map_err(storage_error)?;
+        transaction.execute(
+            "UPDATE project_tasks SET status = 'interrupted', updated_at = ? WHERE status = 'running'",
+            [&now],
+        ).map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
         Ok(active_runs.len())
     }
 }
 
 impl PlatformRepository for SqliteRepository {
+    fn notifications(&self, p: &Principal, after: i64, limit: i64) -> PlatformResult<feynman_core::NotificationFeed> {
+        self.attention_feed(p, after, limit)
+    }
+    fn read_notification(&self, p: &Principal, id: &str) -> PlatformResult<()> {
+        self.attention_read(p, id)
+    }
+    fn check_agent_route(
+        &self,
+        p: &Principal,
+        project: &str,
+        agent: Option<&str>,
+    ) -> PlatformResult<()> {
+        self.resolve_agent(p, project, agent)?;
+        Ok(())
+    }
+    fn check_agent_active(&self, p: &Principal, project: &str) -> PlatformResult<()> {
+        self.get_project(p, project)?;
+        automation::check_active(&*self.connection()?, &p.tenant_id, project)?;
+        Ok(())
+    }
+    fn check_agent_tool(&self, p: &Principal, project: &str, tool: &str) -> PlatformResult<()> {
+        self.get_project(p, project)?;
+        let a = automation::check_active(&*self.connection()?, &p.tenant_id, project)?;
+        if a.capabilities
+            .as_ref()
+            .is_some_and(|caps| !caps.iter().any(|c| c == tool))
+            || !self.is_tool_granted(p, project, tool)?
+        {
+            return Err(PlatformError::ToolNotGranted(tool.into()));
+        }
+        Ok(())
+    }
     fn list_projects(&self, principal: &Principal) -> PlatformResult<Vec<Project>> {
         let connection = self.connection()?;
         let mut statement = connection
@@ -198,6 +400,14 @@ impl PlatformRepository for SqliteRepository {
     }
 
     fn create_project(&self, principal: &Principal, name: &str) -> PlatformResult<Project> {
+        self.create_project_configured(principal, name, false)
+    }
+    fn create_project_configured(
+        &self,
+        principal: &Principal,
+        name: &str,
+        without_agent: bool,
+    ) -> PlatformResult<Project> {
         let name = name.trim();
         if name.is_empty() {
             return Err(PlatformError::InvalidInput(
@@ -210,7 +420,11 @@ impl PlatformRepository for SqliteRepository {
             id: opaque_id("prj"),
             tenant_id: principal.tenant_id.clone(),
             name: name.to_owned(),
-            main_agent_id: opaque_id("agt"),
+            main_agent_id: if without_agent {
+                String::new()
+            } else {
+                opaque_id("agt")
+            },
             created_at: now,
             updated_at: now,
         };
@@ -218,6 +432,7 @@ impl PlatformRepository for SqliteRepository {
             "INSERT INTO projects (id, tenant_id, name, main_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             params![project.id, project.tenant_id, project.name, project.main_agent_id, project.created_at.to_rfc3339(), project.updated_at.to_rfc3339()],
         ).map_err(map_constraint_error)?;
+        automation::migrate(&connection)?;
         Ok(project)
     }
 
@@ -313,8 +528,8 @@ impl PlatformRepository for SqliteRepository {
     ) -> PlatformResult<AgentSession> {
         let connection = self.connection()?;
         if let Some(session) = connection.query_row(
-            "SELECT id, tenant_id, project_id, runtime, status, last_heartbeat_at, created_at, updated_at FROM agent_sessions WHERE tenant_id = ? AND project_id = ?",
-            params![principal.tenant_id, project.id],
+            "SELECT id, tenant_id, project_id, runtime, status, last_heartbeat_at, created_at, updated_at FROM agent_sessions WHERE tenant_id = ? AND project_id = ? AND agent_id = ?",
+            params![principal.tenant_id, project.id, project.main_agent_id],
             session_from_row,
         ).optional().map_err(storage_error)? {
             return Ok(session);
@@ -331,8 +546,8 @@ impl PlatformRepository for SqliteRepository {
             updated_at: now,
         };
         connection.execute(
-            "INSERT INTO agent_sessions (id, tenant_id, project_id, runtime, status, last_heartbeat_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
-            params![session.id, session.tenant_id, session.project_id, session.runtime, session_status_str(&session.status), now.to_rfc3339(), now.to_rfc3339()],
+            "INSERT INTO agent_sessions (id, tenant_id, project_id, runtime, status, last_heartbeat_at, created_at, updated_at, agent_id) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+            params![session.id, session.tenant_id, session.project_id, session.runtime, session_status_str(&session.status), now.to_rfc3339(), now.to_rfc3339(), project.main_agent_id],
         ).map_err(storage_error)?;
         Ok(session)
     }
@@ -377,8 +592,8 @@ impl PlatformRepository for SqliteRepository {
     ) -> PlatformResult<Conversation> {
         let connection = self.connection()?;
         if let Some(conversation) = connection.query_row(
-            "SELECT id, tenant_id, project_id, main_agent_id, runtime_thread_id, created_at, updated_at FROM conversations WHERE tenant_id = ? AND project_id = ?",
-            params![principal.tenant_id, project.id],
+            "SELECT id, tenant_id, project_id, main_agent_id, runtime_thread_id, created_at, updated_at FROM conversations WHERE tenant_id = ? AND project_id = ? AND main_agent_id = ?",
+            params![principal.tenant_id, project.id, project.main_agent_id],
             conversation_from_row,
         ).optional().map_err(storage_error)? {
             return Ok(conversation);
@@ -408,43 +623,18 @@ impl PlatformRepository for SqliteRepository {
         let project = self.get_project(principal, project_id)?;
         let conversation = self.get_or_create_conversation(principal, &project)?;
         let connection = self.connection()?;
-        let mut messages_stmt = connection.prepare(
-            "SELECT id, tenant_id, conversation_id, run_id, role, content, status, created_at, completed_at FROM conversation_messages WHERE tenant_id = ? AND conversation_id = ? ORDER BY rowid",
-        ).map_err(storage_error)?;
-        let messages = messages_stmt
-            .query_map(
-                params![principal.tenant_id, conversation.id],
-                message_from_row,
-            )
-            .map_err(storage_error)?
-            .map(|row| row.map_err(storage_error))
-            .collect::<PlatformResult<Vec<_>>>()?;
-        let mut runs_stmt = connection.prepare(
-            "SELECT id, tenant_id, project_id, conversation_id, agent_session_id, user_message_id, assistant_message_id, status, runtime_turn_id, created_at, started_at, completed_at, error FROM agent_runs WHERE tenant_id = ? AND conversation_id = ? ORDER BY rowid",
-        ).map_err(storage_error)?;
-        let runs = runs_stmt
-            .query_map(params![principal.tenant_id, conversation.id], run_from_row)
-            .map_err(storage_error)?
-            .map(|row| row.map_err(storage_error))
-            .collect::<PlatformResult<Vec<_>>>()?;
-        let active_run = runs
-            .iter()
-            .rev()
-            .find(|run| {
-                matches!(
-                    run.status,
-                    AgentRunStatus::Queued
-                        | AgentRunStatus::Running
-                        | AgentRunStatus::WaitingApproval
-                )
-            })
-            .cloned();
-        Ok(ConversationSnapshot {
-            conversation,
-            messages,
-            runs,
-            active_run,
-        })
+        stream_state::read_snapshot(&connection, principal, &conversation.id)
+    }
+    fn stream_snapshot(&self, principal: &Principal, project_id: &str) -> PlatformResult<(ConversationSnapshot,Option<RunFeed>)> {
+        let project=self.get_project(principal,project_id)?;
+        if project.main_agent_id.is_empty(){return Err(PlatformError::Conflict("project has no Agent".into()));}
+        let conversation=self.get_or_create_conversation(principal,&project)?;
+        let mut connection=self.connection()?;
+        let transaction=connection.transaction().map_err(storage_error)?;
+        let snapshot=stream_state::read_snapshot(&transaction,principal,&conversation.id)?;
+        let feed=snapshot.active_run.as_ref().or_else(||snapshot.runs.last()).map(|r|stream_state::read_feed(&transaction,principal,project_id,&r.id,0)).transpose()?;
+        transaction.commit().map_err(storage_error)?;
+        Ok((snapshot,feed))
     }
 
     fn submit_message(
@@ -454,6 +644,7 @@ impl PlatformRepository for SqliteRepository {
         conversation: &Conversation,
         session: &AgentSession,
         content: &str,
+        task_id: Option<&str>,
     ) -> PlatformResult<SubmittedMessage> {
         let content = content.trim();
         if content.is_empty() {
@@ -475,6 +666,15 @@ impl PlatformRepository for SqliteRepository {
         let user_message_id = opaque_id("msg");
         let assistant_message_id = opaque_id("msg");
         let run_id = opaque_id("run");
+        if let Some(task_id) = task_id {
+            let changed = transaction.execute(
+                "UPDATE project_tasks SET status = 'running', run_id = ?, updated_at = ? WHERE tenant_id = ? AND project_id = ? AND id = ? AND status = 'queued'",
+                params![run_id, now.to_rfc3339(), principal.tenant_id, project.id, task_id],
+            ).map_err(storage_error)?;
+            if changed != 1 {
+                return Err(PlatformError::Conflict("task is not queued".into()));
+            }
+        }
         transaction.execute(
             "INSERT INTO conversation_messages (id, tenant_id, conversation_id, run_id, role, content, status, created_at, completed_at) VALUES (?, ?, ?, NULL, 'user', ?, 'completed', ?, ?)",
             params![user_message_id, principal.tenant_id, conversation.id, content, now.to_rfc3339(), now.to_rfc3339()],
@@ -594,38 +794,18 @@ impl PlatformRepository for SqliteRepository {
         kind: &str,
         payload: Value,
     ) -> PlatformResult<ChatEvent> {
-        let connection = self.connection()?;
-        let run_exists: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE tenant_id = ? AND id = ?)",
-                params![principal.tenant_id, run_id],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        if !run_exists {
-            return Err(PlatformError::NotFound);
-        }
-        let next: i64 = connection
-            .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM chat_events WHERE run_id = ?",
-                [run_id],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        let event = ChatEvent {
-            id: opaque_id("evt"),
-            tenant_id: principal.tenant_id.clone(),
-            run_id: run_id.to_owned(),
-            sequence: next,
-            kind: kind.to_owned(),
-            payload,
-            created_at: Utc::now(),
-        };
-        connection.execute(
-            "INSERT INTO chat_events (id, tenant_id, run_id, sequence, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![event.id, event.tenant_id, event.run_id, event.sequence, event.kind, serde_json::to_string(&event.payload).map_err(storage_error)?, event.created_at.to_rfc3339()],
-        ).map_err(storage_error)?;
+        let mut connection = self.connection()?;
+        let connection = connection.transaction().map_err(storage_error)?;
+        let event=stream_state::write_event(&connection,principal,run_id,kind,payload)?;
+        connection.commit().map_err(storage_error)?;
         Ok(event)
+    }
+    fn append_assistant_delta(&self, principal:&Principal,run:&str,text:&str)->PlatformResult<ChatEvent> {
+        let mut c=self.connection()?;let tx=c.transaction().map_err(storage_error)?;
+        let changed=tx.execute("UPDATE conversation_messages SET content=content||? WHERE tenant_id=? AND run_id=? AND role='assistant'",params![text,principal.tenant_id,run]).map_err(storage_error)?;
+        if changed!=1{return Err(PlatformError::NotFound);}
+        let event=stream_state::write_event(&tx,principal,run,"agent_text_delta",serde_json::json!({"text":text}))?;
+        tx.commit().map_err(storage_error)?;Ok(event)
     }
 
     fn append_assistant_text(
@@ -652,7 +832,8 @@ impl PlatformRepository for SqliteRepository {
         status: AgentRunStatus,
         error: Option<&str>,
     ) -> PlatformResult<()> {
-        let connection = self.connection()?;
+        let mut connection = self.connection()?;
+        let connection = connection.transaction().map_err(storage_error)?;
         let now = Utc::now().to_rfc3339();
         let status_text = run_status_str(&status);
         let changed = connection.execute(
@@ -671,6 +852,11 @@ impl PlatformRepository for SqliteRepository {
             "UPDATE conversation_messages SET status = ?, completed_at = ? WHERE tenant_id = ? AND run_id = ? AND role = 'assistant'",
             params![message_status, now, principal.tenant_id, run_id],
         ).map_err(storage_error)?;
+        connection.execute(
+            "UPDATE project_tasks SET status = ?, updated_at = ? WHERE tenant_id = ? AND run_id = ? AND status = 'running'",
+            params![status_text, now, principal.tenant_id, run_id],
+        ).map_err(storage_error)?;
+        connection.commit().map_err(storage_error)?;
         Ok(())
     }
 
@@ -682,23 +868,7 @@ impl PlatformRepository for SqliteRepository {
         after_sequence: i64,
     ) -> PlatformResult<RunFeed> {
         let connection = self.connection()?;
-        let run = connection.query_row(
-            "SELECT id, tenant_id, project_id, conversation_id, agent_session_id, user_message_id, assistant_message_id, status, runtime_turn_id, created_at, started_at, completed_at, error FROM agent_runs WHERE tenant_id = ? AND project_id = ? AND id = ?",
-            params![principal.tenant_id, project_id, run_id],
-            run_from_row,
-        ).optional().map_err(storage_error)?.ok_or(PlatformError::NotFound)?;
-        let mut statement = connection.prepare(
-            "SELECT id, tenant_id, run_id, sequence, kind, payload_json, created_at FROM chat_events WHERE tenant_id = ? AND run_id = ? AND sequence > ? ORDER BY sequence",
-        ).map_err(storage_error)?;
-        let events = statement
-            .query_map(
-                params![principal.tenant_id, run_id, after_sequence],
-                event_from_row,
-            )
-            .map_err(storage_error)?
-            .map(|row| row.map_err(storage_error))
-            .collect::<PlatformResult<Vec<_>>>()?;
-        Ok(RunFeed { run, events })
+        stream_state::read_feed(&connection,principal,project_id,run_id,after_sequence)
     }
 }
 
@@ -914,7 +1084,7 @@ mod tests {
             .get_or_create_conversation(&local, &project)
             .unwrap();
         let submitted = repository
-            .submit_message(&local, &project, &conversation, &session, "hello")
+            .submit_message(&local, &project, &conversation, &session, "hello", None)
             .unwrap();
         repository
             .mark_run_started(&local, &submitted.run.id, "turn-1")
@@ -1025,10 +1195,17 @@ mod tests {
             .get_or_create_conversation(&principal, &project)
             .unwrap();
         repository
-            .submit_message(&principal, &project, &conversation, &session, "first")
+            .submit_message(&principal, &project, &conversation, &session, "first", None)
             .unwrap();
         assert!(matches!(
-            repository.submit_message(&principal, &project, &conversation, &session, "second"),
+            repository.submit_message(
+                &principal,
+                &project,
+                &conversation,
+                &session,
+                "second",
+                None
+            ),
             Err(PlatformError::RunAlreadyActive)
         ));
         drop(repository);
@@ -1062,6 +1239,7 @@ mod tests {
                 &conversation,
                 &session,
                 "continue later",
+                None,
             )
             .unwrap();
         repository

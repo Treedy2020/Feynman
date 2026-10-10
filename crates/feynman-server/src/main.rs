@@ -1,5 +1,10 @@
+mod console;
+mod external_access;
+use external_access::providers::dws::authorization as dws_authorization;
 mod external_tools;
 mod http;
+mod management;
+mod resources;
 mod runtime;
 mod store;
 mod workspace;
@@ -14,10 +19,14 @@ use std::sync::Arc;
 use store::SqliteRepository;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use workspace::LocalWorkspaceProvider;
+use workspace::ProjectWorkspaceProvider;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::var("FEYNMAN_GIT_ASKPASS").as_deref() == Ok("1") {
+        external_access::providers::git::askpass()?;
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("external-tools-mcp") {
         external_tools::run_stdio_mcp_server().await?;
         return Ok(());
@@ -39,46 +48,120 @@ async fn main() -> Result<()> {
         );
     }
 
-    let data_root = std::env::var_os("FEYNMAN_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(".feynman"));
-    std::fs::create_dir_all(&data_root)?;
-    let db_path = std::env::var_os("FEYNMAN_DB")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| data_root.join("rust-platform.sqlite3"));
-    let workspace_root = std::env::var_os("FEYNMAN_WORKSPACE_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| data_root.join("workspaces"));
+    let home = feynman_local::LocalHome::from_env()?;
+    home.check_legacy_registry(
+        &std::env::current_dir()?,
+        ["FEYNMAN_HOME", "FEYNMAN_DATA_DIR", "FEYNMAN_DB"]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some()),
+    )?;
+    home.initialize()?;
+    let db_path = &home.database;
+    let workspace_root = &home.workspace_root;
 
-    let repository = Arc::new(SqliteRepository::open(&db_path)?);
-    let absolute_db_path = std::fs::canonicalize(&db_path)?;
+    // Lock before opening/migrating the database, not after recovery has already changed it.
+    let lock_path = if db_path.exists() {
+        std::fs::canonicalize(db_path)?
+    } else {
+        std::fs::canonicalize(db_path.parent().context("database parent missing")?)?
+            .join(db_path.file_name().context("database filename missing")?)
+    };
+    let server_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path.with_extension("server.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&server_lock).context("another Feynman server owns this database; use that server instead of starting a second scheduler")?;
+    let repository = Arc::new(SqliteRepository::open(db_path)?);
+    let absolute_db_path = std::fs::canonicalize(db_path)?;
+    let listener = TcpListener::bind(bind).await?;
+    let access_server_url = format!("http://{}", listener.local_addr()?);
+    repository.interrupt_dws_authorizations()?;
+    let authorization = dws_authorization::DwsAuthorizationService::new(
+        repository.clone(),
+        home.private_root.join("dws"),
+        std::env::var_os("FEYNMAN_DWS_BIN").unwrap_or_else(|| "dws".into()),
+    )?;
     let repository_for_tools: Arc<dyn PlatformRepository> = repository.clone();
-    let external_tools = external_tools::service(repository_for_tools)?;
+    let workspace = Arc::new(ProjectWorkspaceProvider::new(
+        repository.clone(),
+        workspace_root.clone(),
+    )?);
+    let access = external_access::ExternalAccessBroker::new(
+        repository_for_tools.clone(),
+        home.private_root.join("external-access"),
+        authorization.clone(),
+    )?
+    .with_workspace(workspace.clone());
+    let external_tools =
+        external_tools::service_at(repository_for_tools, Some(access_server_url.clone()))?;
     let interrupted_runs = repository.recover_after_server_restart()?;
+    repository.recover_inbox()?;
+    repository.recover_listeners()?;
     if interrupted_runs > 0 {
         tracing::warn!(
             interrupted_runs,
             "marked unfinished Agent Runs interrupted after server restart"
         );
     }
-    let runtime: Arc<dyn AgentRuntime> = Arc::new(CodexAppServerRuntime::new(absolute_db_path));
-    let workspace: Arc<dyn WorkspaceProvider> =
-        Arc::new(LocalWorkspaceProvider::new(workspace_root));
+    let runtime: Arc<dyn AgentRuntime> = Arc::new(
+        CodexAppServerRuntime::new(absolute_db_path, home.codex_home.clone())
+            .with_access_server(access_server_url),
+    );
+    let workspace_for_runtime: Arc<dyn WorkspaceProvider> = workspace.clone();
     let identity: Arc<dyn IdentityProvider> = Arc::new(http::DevIdentityProvider);
-    let service = Arc::new(PlatformService::new(
-        repository,
-        runtime.clone(),
-        workspace,
-        identity,
-        external_tools,
-    ));
-    let app = http::router(service);
-    let listener = TcpListener::bind(bind).await?;
-    tracing::info!(%bind, "Feynman Rust dev server listening");
+    let resources = Arc::new(resources::ResourceManager::new(
+        repository.clone(),
+        workspace.clone(),
+        access.clone(),
+        home.private_root.join("resources"),
+    )?);
+    let service = Arc::new(
+        PlatformService::new(
+            repository.clone(),
+            runtime.clone(),
+            workspace_for_runtime,
+            identity,
+            external_tools,
+        )
+        .with_context(resources.clone()),
+    );
+    let manager = Arc::new(
+        management::ProjectManager::new(repository, service.clone(), workspace.clone())
+            .with_access(access.clone()),
+    );
+    let scheduler = manager.start_scheduler();
+    let reconciler = {
+        let resources = resources.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                timer.tick().await;
+                let _ = resources.tick().await;
+            }
+        })
+    };
+    let app =
+        http::router_with_management(service, Some(authorization.clone()), Some(manager.clone()))
+            .merge(external_access::http::router(access))
+            .merge(resources::http::router(resources));
+    let app = console::router(app, listener.local_addr()?);
+    tracing::info!(%bind, home = %home.home.display(), codex_home = %home.codex_home.display(), "Feynman Rust dev server listening; Console at /console/");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    scheduler.abort();
+    reconciler.abort();
+    let _ = reconciler.await;
+    let _ = scheduler.await;
+    manager.close_sources().await;
     runtime.close().await.context("closing Agent Runtime")?;
+    workspace.close().await;
+    authorization
+        .close()
+        .await
+        .context("closing DWS authorizations")?;
     Ok(())
 }
 
@@ -160,9 +243,13 @@ mod tests {
     impl feynman_core::WorkspaceProvider for TestWorkspace {
         async fn ensure_workspace(
             &self,
+            _principal: &feynman_core::Principal,
             _project: &feynman_core::Project,
-        ) -> PlatformResult<String> {
-            Ok(std::env::temp_dir().to_string_lossy().into_owned())
+        ) -> PlatformResult<feynman_core::PreparedWorkspace> {
+            Ok(feynman_core::PreparedWorkspace {
+                local_cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+                environment: None,
+            })
         }
     }
 
@@ -322,6 +409,25 @@ mod tests {
         let tools = body_json(response).await;
         assert_eq!(tools["tools"][0]["id"], "dws.aisearch.enterprise");
         assert_eq!(tools["tools"][0]["granted"], false);
+
+        // The same public invocation interface used by the CLI must enforce grants.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("{list_uri}/dws.aisearch.enterprise/invoke"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"arguments": {}}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "TOOL_NOT_GRANTED"
+        );
 
         let grant_uri = format!("{list_uri}/dws.aisearch.enterprise");
         let response = app

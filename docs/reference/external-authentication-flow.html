@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="公共认证与授权参考：设备登录协议、项目申请、Connection、Binding、Tool Grant、状态观测与凭证撤销。"><title>Feynman Docs · 公共认证与授权流程</title><link rel="icon" href="data:,"><link rel="stylesheet" href="../assets/site.css"><script src="../assets/doc-site.js" defer></script></head>
+<body data-doc="auth-flow" data-docs-root=".."><div class="page"><header class="topbar"></header><main id="content">
+  <section class="hero"><span class="doc-status">公共参考 · 通用模型 + V1 边界</span><h1>认证证明账号，授权决定项目能做什么。</h1><p class="lead">这里说明跨 CLI 的共同规则，不把 DWS 专属命令和状态复制成“所有工具都支持”的接口。Provider 决定如何认证；Feynman 决定哪个项目、哪个账号、什么操作、何时可以调用。</p></section>
+  <nav class="toc" aria-label="本页目录"><a href="#concepts">权限分层</a><a href="#flow">公共流程</a><a href="#device">设备登录</a><a href="#observation">状态与检查</a><a href="#revocation">撤销边界</a><a href="#security">凭证边界</a><a href="#providers">实现差异</a></nav>
+  <section class="section" id="concepts"><span class="label">共同概念</span><h2>不要把三个许可合成一个“已登录”。</h2>
+    <div class="table-wrap"><table><thead><tr><th>层次</th><th>证明什么</th><th>不证明什么</th></tr></thead><tbody>
+      <tr><td>外部账号认证</td><td>Provider 已验证某个真实用户 / 组织账号；可登记 Connection。</td><td>不自动授权任意项目，不保证账号能访问指定资源。</td></tr>
+      <tr><td>项目绑定与业务 Grant</td><td>项目明确使用哪个账号、仓库和有效期，并允许固定业务能力。</td><td>不扩大 Provider 实际权限，也不隐含任意 CLI、写操作或部署权限。</td></tr>
+      <tr><td>执行环境与审批</td><td>允许 Agent 在指定 Workspace 执行被批准的本地操作。</td><td>不隐含外部登录、云资源创建、凭证下发或远端发布权。</td></tr>
+    </tbody></table></div><p>Skill 说明工具怎么用，不是授权证据。镜像装有 CLI 也不表示已登录。同一所有者可以显式复用账号，但 Project A 的登录或 Grant 不自动赋予 B 权限。</p>
+  </section>
+  <section class="section" id="flow"><span class="label">公共控制面流程</span><h2>申请、认证、绑定、批准、逐次验证。</h2>
+    <div class="diagram-viewport" aria-label="公共权限流程框图"><svg class="architecture-svg" viewBox="0 0 900 250" role="img" aria-labelledby="auth-flow-title auth-flow-desc">
+      <title id="auth-flow-title">外部账号认证与项目使用权的公共流程</title><desc id="auth-flow-desc">项目申请能力，所有者认证并登记账号，绑定项目和期限，单独批准业务 Grant，实际调用重新核对权限和身份。</desc>
+      <defs><marker id="auth-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10Z" fill="var(--muted)"/></marker></defs>
+      <g fill="var(--bg)" stroke="var(--line)"><rect x="20" y="24" width="250" height="76" rx="6"/><rect x="325" y="24" width="250" height="76" rx="6"/><rect x="630" y="24" width="250" height="76" rx="6"/><rect x="630" y="152" width="250" height="76" rx="6"/><rect x="325" y="152" width="250" height="76" rx="6"/><rect x="20" y="152" width="250" height="76" rx="6"/></g>
+      <g fill="var(--text)" font-size="14" font-weight="550"><text x="36" y="54">1 · 项目申请能力</text><text x="341" y="54">2 · 所有者完成外部认证</text><text x="646" y="54">3 · 验证并登记 Connection</text><text x="646" y="182">4 · 绑定项目 / 资源 / 期限</text><text x="341" y="182">5 · 单独授予业务 Tool Grant</text><text x="36" y="182">6 · 调用前重新核对并执行</text></g>
+      <g fill="var(--muted)" font-size="11"><text x="36" y="80">请求不等于登录或批准</text><text x="341" y="80">认证方法由 Provider 决定</text><text x="646" y="80">只有公开账号元数据交给 Agent</text><text x="646" y="208">不因绑定账号而自动获权</text><text x="341" y="208">Agent 无权批准自己的提权</text><text x="36" y="208">验证身份 / 到期 / 撤销 / 最新绑定</text></g>
+      <g fill="none" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#auth-flow-arrow)"><path d="M270 62H325"/><path d="M575 62H630"/><path d="M755 100V152"/><path d="M630 190H575"/><path d="M325 190H270"/></g>
+    </svg></div>
+    <p class="section-copy">图是理解顺序，不强制唯一顺序：可先授予能力上限，也可选择已有 Connection；实际执行必须同时满足认证、绑定和 Grant。Provider 有单独的登录发起许可时，所有者还要先授予它。</p>
+    <p>V1 通用 MCP <code>feynman_access</code> 只有 <code>providers / status / request</code>，先需 <code>external.access</code> Grant。它不登录、不录入 Token、不绑定、不 approve。请求持久化 24 小时并去重；所有者用 <code>feynman access</code> 管理账号和绑定，用 <code>external-tools grant / revoke</code> 管理业务许可。</p>
+    <p class="note">可运行命令见 <a href="../modules/external-access/index.html#cli">External Access CLI</a>。更完整的资源 ACL、统一认证生命周期和租约仍是 <a href="../architecture/external-access-abstraction.html">演进契约</a>，不能当作当前 API。</p>
+  </section>
+  <section class="section" id="device"><span class="label">公共协议参考 · 仅适用于支持 Device 的 Provider</span><h2>不要求服务端打开浏览器的登录方式。</h2>
+    <p>OAuth 设备授权让无合适浏览器或输入受限的客户端发起认证；用户在另一端打开验证页面并确认，客户端等待授权结果。协议说明见 <a href="https://www.rfc-editor.org/rfc/rfc8628.html#section-3">RFC 8628</a>。</p>
+    <ol><li>客户端向 Provider 发起设备授权，取得用户验证信息和私有设备码。</li><li>只向用户展示验证链接、用户码及期限；用户在 Provider 页面核对请求并同意或拒绝。</li><li>原生 CLI 按 Provider 的协议和轮询间隔等待结果；Feynman 不通过前端反复启动新登录。</li><li>完成后验证实际账号，再进入 Connection 与项目授权流程。网页确认和项目获权仍是两件事。</li></ol>
+    <div class="table-wrap"><table><thead><tr><th>字段 / 数据</th><th>谁可看到</th><th>用途</th></tr></thead><tbody><tr><td><code>verification_uri</code> / <code>verification_uri_complete</code></td><td>该申请的用户 / 项目客户端</td><td>打开 Provider 的真实验证页面。</td></tr><tr><td><code>user_code</code> / <code>expires_at</code></td><td>该申请的用户 / 项目客户端</td><td>核对本次申请与截止时间；不是可长期分享的凭证。</td></tr><tr><td><code>device_code</code> / Token / app secret</td><td>私有认证实现</td><td>不得返回给 Agent、项目日志或 Workspace。</td></tr></tbody></table></div>
+    <p class="section-copy">标准设备响应使用 <code>expires_in</code> 等协议字段；<code>expires_at</code> 是 Feynman DWS 适配器的公开截止时间。字段表是交互原则，不声称所有 Provider 都采用 DWS JSON schema。DWS 当前实现见 <a href="../modules/external-access/dws.html#authentication">DWS 设备登录</a>；GitLab V1 使用 Token stdin 或所有者显式原生导入，Git 不提供 device 登录。</p>
+  </section>
+  <section class="section" id="observation"><span class="label">公共客户端职责</span><h2>进度、实际验证、Heart Beat 不要混用。</h2>
+    <div class="table-wrap"><table><thead><tr><th>机制</th><th>负责者</th><th>意义</th></tr></thead><tbody><tr><td>Provider 授权轮询</td><td>原生认证 CLI</td><td>等待用户同意，遵循 Provider 的期限与轮询规则。</td></tr><tr><td>公开进度读取</td><td>用户 CLI / 未来前端</td><td>读取 Server 保存的记录；DWS GET / status 不触发新登录。</td></tr><tr><td>新鲜身份检查</td><td>Provider Adapter / Broker</td><td>DWS check 或业务调用重新验证实际账号；按需刷新由工具负责。</td></tr><tr><td>Session Heartbeat</td><td>Agent 运行时（后续能力）</td><td>存活信号，不证明外部账号有效，也不自动创建任务。</td></tr></tbody></table></div>
+    <p>历史“登录成功”与当前“已配置”都不证明 Token 仍有效。V1 <code>configured_not_verified</code> 只代表绑定和 Grant 元数据满足；实际业务调用仍需重新验证。Provider 专属状态保留在子模块：DWS 的 <code>authorized</code> 不能改写为平台已经授予搜索权。</p>
+    <p>客户端只显示经适配器验证的链接和公开字段，停止展示过期 / 中止的挑战，避免写入浏览器缓存或外部日志。若页面未来接入，不接收任意认证地址、不读取私有配置，不代用户同意。</p>
+  </section>
+  <section class="section" id="revocation"><span class="label">撤销与失效</span><h2>取消任务，不等于吊销外部账号。</h2>
+    <div class="table-wrap"><table><thead><tr><th>动作</th><th>作用范围</th><th>不承诺</th></tr></thead><tbody><tr><td>取消认证任务</td><td>结束本次未完成的登录等待。</td><td>不吊销已经发出的 Provider Token。</td></tr><tr><td>撤销项目 Tool Grant</td><td>禁止该项目后续调用指定业务能力。</td><td>不移除其他项目的独立 Grant。</td></tr><tr><td>解绑 / 到期</td><td>该项目不能继续用对应账号 / 仓库执行新调用。</td><td>不删除外部账号或其他项目绑定。</td></tr><tr><td>停用 Connection</td><td>阻断本地使用此 Connection 的新调用。</td><td>不声称 Provider 已 revoke Token。</td></tr><tr><td>Provider 侧吊销</td><td>由外部系统实际使凭证失效。</td><td>当前未实现通用远端吊销入口。</td></tr></tbody></table></div>
+    <p>已发出的调用与外部副作用不能保证收回。Server 重启也不等于恢复了 OAuth 进程；各 Provider 应明确哪些状态可恢复。DWS 将未完成流程标为 interrupted，实际规则见 <a href="../modules/external-access/dws.html#recovery">DWS 生命周期</a>。</p>
+  </section>
+  <section class="section" id="security"><span class="label">公共安全边界</span><h2>结果进入项目，秘密留在控制面。</h2>
+    <p>Agent 只提交能力需求、理由和业务 schema 中的参数，不能任意选择 binary、认证服务地址、私有路径、账号密钥或另一个项目。认证与所有者管理入口不直接暴露为可自行提权的项目 MCP。</p>
+    <p>V1 为本地可信开发身份，Server 只监听 loopback，凭证保存在私有目录；不是加密 Vault、远程用户认证或强多租户隔离。认证缓存不挂载到 Workspace，不进镜像。受批准的固定 git.workspace.clone 会将凭证经 stdin 短暂用于容器 Git 进程环境；root Agent 可观察它，不能声称恶意 Agent 保密。管理 CLI / MCP 是协议边界，不阻止同一 OS 用户读取文件 / 进程，也不发放伪装成临时租约的长期 Token。</p>
+    <p>“只读”仍需核对实际资源与 Provider 可执行约束。关键词不是资源 ACL；无法执行的窄权限不能声称已经保证。对接更多外部工具时，应复用这些共同规则，而不是复用 DWS 固定域名、600 秒等待上限或错误码。</p>
+  </section>
+  <section class="section" id="providers"><span class="label">当前 Provider 差异</span><h2>公共流程，不抹平工具的差异。</h2>
+    <p>GitLab 支持所有者显式原生导入或 Token stdin；Slate 使用真实浏览器 PKCE 或选定 Keychain profile 导入；Drlee 使用原生浏览器或单账号缓存导入，独立刷新。Slate / Drlee 新登录由所有者 CLI 保持等待，没有通用后台 device 状态机；Agent request 持久化需求并提示所有者命令，不直接录入密钥或批准。具体命令与边界见 <a href="../modules/external-access/slate.html">Slate</a> / <a href="../modules/external-access/drlee.html">Drlee</a> / <a href="../modules/external-access/git.html">Sandbox Git clone</a>。</p>
+    <div class="directory-list"><a class="directory-item" href="../modules/external-access/dws.html"><strong>DWS CLI ↗</strong><p>device 登录、钉钉页面、专属状态 / HTTP / MCP、私有缓存和企业搜索。</p></a><a class="directory-item" href="../modules/external-access/gitlab.html"><strong>GitLab CLI ↗</strong><p>原生 glab 导入或 Token stdin；尚未托管 glab device 流程。</p></a><a class="directory-item" href="../modules/external-access/git.html"><strong>Git CLI ↗</strong><p>委托指定 GitLab Connection；固定 remote 读取和 Sandbox clone。</p></a><a class="directory-item" href="../modules/external-access/slate.html"><strong>Slate CLI ↗</strong><p>真实浏览器 PKCE、显式 Keychain profile 导入与只读工具。</p></a><a class="directory-item" href="../modules/external-access/drlee.html"><strong>Drlee CLI ↗</strong><p>原生浏览器、单账号缓存导入、独立刷新与渠道读取。</p></a><a class="directory-item" href="../modules/external-access/index.html"><strong>External Access 总览 ↗</strong><p>共享 Broker、私有存储、限期绑定与实际命令。</p></a></div>
+  </section>
+</main><footer><a href="../index.html">← 架构总览</a><span>公共认证与授权参考 / 2026-09-29</span></footer></div></body></html>

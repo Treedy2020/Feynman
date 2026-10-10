@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Feynman · Local Console</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/console/app.css">
+  <script type="module" src="/console/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到工作台</a>
+  <aside class="sidebar" aria-label="工作台导航">
+    <a class="brand" href="#"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M7 25V7h18M7 16h13M16 7v18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="25" cy="25" r="3" fill="currentColor"/></svg><span>Feynman<span class="brand-sub">LOCAL CONSOLE</span></span></a>
+    <div class="scope-label">WORKSPACE</div>
+    <nav id="navigation"><a class="nav-item active" href="#">所有项目</a></nav>
+    <div id="project-navigation"></div>
+    <div class="sidebar-bottom"><span class="connection" id="connection"><i></i>正在连接本机</span><span class="muted tiny">会话留在本地，执行进入沙盒。</span><button id="theme-toggle" class="text-button">切换外观</button></div>
+  </aside>
+  <div class="workspace-shell">
+    <header class="topbar"><div id="breadcrumb">项目</div><div class="topbar-right"><span class="local-label">LOCAL FIRST</span><button id="refresh" class="icon-button" title="刷新当前视图" aria-label="刷新当前视图">↻</button></div></header>
+    <main id="main" tabindex="-1"><div class="loading">正在读取 Feynman 的项目…</div></main>
+  </div>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <dialog id="dialog"><div class="dialog-heading"><h2 id="dialog-title"></h2><button id="dialog-close" class="icon-button" aria-label="关闭">×</button></div><form id="dialog-form"><div id="dialog-body"></div><div id="dialog-error" class="form-error" role="alert" hidden></div><div class="dialog-actions"><button type="button" id="dialog-cancel" class="button">取消</button><button type="submit" id="dialog-submit" class="button primary">确认</button></div></form></dialog>
+</body>
+</html>

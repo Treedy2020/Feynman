@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="保留当时地区、SKU 和时间边界。不是当前报价；再次购买或开资源前必须重新核价。">
+  <title>Feynman Docs · GKE 成本快照</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="gke-cost" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status historical">历史报价 · 2026-09-28</span><h1>GKE 成本快照</h1><p class="lead">保留当时地区、SKU 和时间边界。不是当前报价；再次购买或开资源前必须重新核价。</p></section>
+
+    <article class="doc-body"><p class="source-title" id="gke-sandbox-成本-2026-09-28">GKE Sandbox 成本 · 2026-09-28</p>
+<p>范围：Singapore <code>asia-southeast1</code>、general-purpose Autopilot、USD 按需；只读官方资料，无云资源、计费或权限变更。官网默认 Iowa 价不可代替 Singapore。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>资源</th>
+<th>USD 单价</th>
+<th>官方 Catalog 证据（主线转交）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU</td>
+<td>$0.0549/vCPU·h</td>
+<td><a href="https://cloudbilling.googleapis.com/v1/services/CCD8-9BF1-090E/skus?currencyCode=USD&amp;pageSize=5000">GKE API</a>；<code>589B-F840-EC19</code>，54900 nanos/mCPU·h × 1000</td>
+</tr>
+<tr>
+<td>内存</td>
+<td>$0.0060729/GiB·h</td>
+<td><a href="https://cloudbilling.googleapis.com/v1/services/CCD8-9BF1-090E/skus?currencyCode=USD&amp;pageSize=5000">GKE API</a>；<code>6500-7637-6ACA</code>，6072900 nanos/GiB·h</td>
+</tr>
+<tr>
+<td>ephemeral</td>
+<td>实际适用价未知</td>
+<td><code>3577-D694-91BC</code>：$0.0000676/GiB·h；尚未核对实际存储类型，不纳入估算</td>
+</tr>
+<tr>
+<td>zonal pd-balanced</td>
+<td>$0.11/GiB·月</td>
+<td><a href="https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus?currencyCode=USD&amp;pageSize=5000">Disk API</a>；<code>16D2-FC49-A127</code>，110000000 nanos/GiB·月；10Gi=$1.10/月、50Gi=$5.50/月</td>
+</tr>
+</tbody>
+</table>
+<p>CPU/内存/磁盘 API <code>effectiveTime=2026-09-28T07:00:00Z</code>，SKU 地区为 <code>asia-southeast1</code>；磁盘 SKU 描述为 <code>Balanced PD Capacity in Singapore</code>，来自第一页。</p>
+<p><a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox">原生 Agent Sandbox</a>（要求 gVisor）无附加费。warm pool 保持 Pod 运行，idle 也按 requests 收费（由运行规则推得）。</p>
+<p><a href="https://cloud.google.com/kubernetes-engine/pricing">普通 Pod 计费</a>逐秒、无最低时长：ContainerCreating/Running 收费；终止或待调度不收费。未修改系统 DaemonSet、OS 开销、未分配节点容量免费。指定机型/GPU 等例外按整节点 Compute Engine 价＋管理溢价，停 Pod 不等于停节点费。</p>
+<p>管理费 $0.10/集群·h，730h 毛额 $73；每 billing account 每月 $74.40 共享抵扣，仅 Autopilot/zonal Standard 管理费；Regional Standard 不适用，也不能抵计算或磁盘费。符合条件且额度未占用时，管理费可抵至 $0。<a href="https://cloud.google.com/kubernetes-engine/pricing">规则</a></p>
+<p><a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/gce-pd-csi-driver">standard-rwo</a> 使用 pd-balanced。关闭 Sandbox 后独立 PVC/磁盘若保留，仍按全部预配容量收费，直到磁盘删除。<a href="https://cloud.google.com/compute/disks-image-pricing">磁盘规则</a></p>
+<p>因此，普通 Pod 终止、保留 10Gi PVC 和集群：$1.10/月磁盘费＋未抵扣管理费。据<a href="gke-sandbox-smoke-2026-09-28.html">smoke 记录</a>，本次临时集群和 PVC 已删除。</p>
+<p><a href="../../scripts/smoke/gke_sandbox.yaml">YAML</a> requests=250m/512Mi、limits=500m/1Gi、PVC=10Gi；实际 Pod requests 未存档，GKE 可能调整。ephemeral 未声明，官方默认普通容器 1Gi，实际待核。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests">默认规则</a></p>
+<p>以下假设整月运行 730h、表中数值即实际计费 requests；仅 CPU＋内存，另加 PVC、ephemeral 和未抵扣管理费，非 smoke 实账。</p>
+<table>
+<thead>
+<tr>
+<th>vCPU / 内存 GiB</th>
+<th style="text-align: right;">USD/730h</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.5 / 1</td>
+<td style="text-align: right;">$24.47</td>
+</tr>
+<tr>
+<td>1 / 2</td>
+<td style="text-align: right;">$48.94</td>
+</tr>
+<tr>
+<td>2 / 4</td>
+<td style="text-align: right;">$97.89</td>
+</tr>
+</tbody>
+</table>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

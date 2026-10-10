@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="当前操作说明。HTML 是阅读入口；原始 Markdown 仅保留作兼容来源。">
+  <title>Feynman Docs · CLI 与运行指南</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="operations" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status">当前实现</span><h1>CLI 与运行指南</h1><p class="lead">当前操作说明。HTML 是阅读入口；原始 Markdown 仅保留作兼容来源。</p><p class="note">2026-10-09 更新：环境、使用租约与长期记忆见 <a href="environment-leases-memory.html">当前资源模块契约</a>。本页保留既有兼容入口说明。Agent CRUD、独立来源历史、固定窗口与 Inbox 的当前可运行命令见 <a href="agent-schedules.html#cli">Agent 与 Schedule</a>；旧 send / messages 仍为立即启动入口，不提供 Inbox 排队。</p></section>
+    <nav class="doc-outline" aria-label="本页章节"><a href="#ownership">Ownership</a><a href="#local-user-home-and-native-sessions">Local user Home and native sessions</a><a href="#cli-workflow">CLI workflow</a><a href="#schedules-and-recovery">Schedules and recovery</a><a href="#opensandbox-operator-setup">OpenSandbox operator setup</a><a href="#security-boundary">Security boundary</a><a href="#external-access-module">External Access module</a><a href="#verification">Verification</a></nav>
+    <article class="doc-body"><p class="source-title" id="local-first-feynman-skill-cli-one-main-agent">Local-first Feynman — Skill + CLI + one Main Agent</p>
+<p>Implemented 2026-09-29. Feynman is the local project manager, accessed from the user’s own harness. No GUI or mandatory Reviewer is required.</p>
+<p>HTML documentation: <a href="local-first-architecture.html">architecture</a> and <a href="local-user-home.html">local user Home / implementation details</a>.</p>
+<pre class="text"><code>Local Codex / other harness
+  [Feynman Skill] --&gt; [feynman CLI] --&gt; [local Rust Server]
+                                         |      |      |
+                                      SQLite  Tasks  Tool grants / DWS auth
+                                         |
+                          +--------------+---------------+
+                          |                              |
+                      [Project A]                    [Project B]
+                      [Main Agent]                   [Main Agent]
+                      [Codex thread]                 [Codex thread]
+                          |                              |
+                   native Executor                native Executor
+                          |                              |
+                   [OpenSandbox A]                [OpenSandbox B]
+                   [volume A]                     [volume B]
+
+Reviewer: future optional role; not instantiated or required in V1.</code></pre>
+<h2 id="ownership">Ownership</h2>
+<p>Each Project owns one Main Agent identity, Agent Session and Conversation. Messages, Tasks and Schedule occurrences use that same Conversation. SQLite persists work, schedules, events, thread IDs and Workspace bindings, scoped by Tenant/Project. Runtime processes may restart. A database advisory lock prevents a second daemon from interrupting the first one’s Runs or starting another scheduler; it is not distributed leadership.</p>
+<p>The local harness is a manager, not the Project Agent. The implementation reuses <a href="https://learn.chatgpt.com/docs/app-server">Codex App Server</a> and <a href="https://learn.chatgpt.com/docs/build-skills">standalone Skills</a>, without a custom Skill registry/model harness. Experimental remote messages target tested Codex 0.157.1, rather than assuming protocol stability from documentation alone.</p>
+<p>Local workspaces are separate directories. Remote Projects have distinct containers and retained named volumes. <code>/workspace</code> survives replacement; rootfs, dependencies outside the volume, memory, PTYs and processes do not.</p>
+<h2 id="local-user-home-and-native-sessions">Local user Home and native sessions</h2>
+<p>The default root is now <code>$HOME/.feynman</code>, independent of the launch cwd. <code>FEYNMAN_HOME</code> overrides it; <code>FEYNMAN_DATA_DIR</code> is a compatible alias. Conflicting roots are rejected. <code>FEYNMAN_DB</code> and <code>FEYNMAN_WORKSPACE_ROOT</code> remain explicit overrides. CLI and server share filesystem policy in <code>feynman-local</code>.</p>
+<pre class="text"><code>~/.feynman/
+  rust-platform.sqlite3             platform messages/events/tasks/grants
+  rust-platform.server.lock         single-daemon database lock
+  codex/                            dedicated native CODEX_HOME
+    config.toml                     self-owned configuration, not overwritten
+    auth.json                       optional explicit import/native login cache
+    sessions/                       native transcript JSONL, created by Codex
+    ...                             native state databases, archives/logs/caches
+  private/dws/                      isolated device-authorization store
+  workspaces/&lt;tenant&gt;/&lt;project&gt;/     local Workspace or control cwd</code></pre>
+<p>The runtime overrides both <code>CODEX_HOME</code> and <code>CODEX_SQLITE_HOME</code> on each local app-server child, even if the server inherits personal harness paths. All Projects currently share the user’s native Home, but have separate Thread identities. This is not per-tenant OS/credential/memory isolation. Host-wide Skills and provider environment variables are not isolated merely by changing CODEX_HOME.</p>
+<p><code>home</code> reads paths offline; <code>init</code> creates private directories (<code>0700</code>) and a minimal config (<code>0600</code>) without copying personal config/auth/sessions. Existing public private directories or linked config/auth files are refused without edits. Optional <code>init --import-codex-auth SOURCE_HOME</code> copies only a regular <code>auth.json</code> to a new <code>0600</code> cache; identical content is idempotent, differing content is refused. It never uses a credential symlink. Keyring caches cannot be imported this way. Source-file writes are isolated, but account-level OAuth refresh may still affect cache validity. Custom provider configuration must be set independently.</p>
+<p>Platform messages remain in SQLite, not a new Feynman JSONL journal. Native Codex JSONL belongs to the runtime and is resumed through the native API. JSONL export is reserved, not implemented. Backups must cover both stores, plus separately back up remote volumes and any overridden local paths. Stop the daemon first or use consistent backup mechanisms; do not copy only an actively written DB file.</p>
+<p>The old cwd <code>.feynman/</code> is never deleted/moved. A detected old Rust registry blocks an implicit switch to a missing default database; explicitly select its root and restore its matching native history. Missing history causes resume to fail, not silent Thread creation. There is no automatic session migration or TS <code>platform.db</code> conversion in this slice.</p>
+<p>See official <a href="https://learn.chatgpt.com/docs/config-file/config-advanced">state locations</a>, <a href="https://learn.chatgpt.com/docs/auth">credential/device login</a> and <a href="https://learn.chatgpt.com/docs/app-server">Thread lifecycle</a>.</p>
+<h2 id="cli-workflow">CLI workflow</h2>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> install <span class="at">--path</span> crates/feynman-cli <span class="at">--locked</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> install <span class="at">--path</span> crates/feynman-server <span class="at">--locked</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> home</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> init</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="va">CODEX_HOME</span><span class="op">=</span><span class="st">&quot;</span><span class="va">$HOME</span><span class="st">/.feynman/codex&quot;</span> <span class="ex">codex</span> login <span class="at">--device-auth</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> skill install <span class="at">--skills-dir</span> <span class="st">&quot;</span><span class="va">$HOME</span><span class="st">/.agents/skills&quot;</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman-server</span></span></code></pre></div>
+<p>Use an absolute <code>FEYNMAN_HOME</code> for a custom registry; use its printed <code>codex_home</code> for login instead of the default path above. Server binding remains loopback-only. Skill install is idempotent and refuses to overwrite differing local content or edit global Codex config. Keep the server running and the machine awake for scheduled work.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> <span class="at">--json</span> status</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> <span class="at">--json</span> projects create <span class="at">--name</span> <span class="st">&quot;My project&quot;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> workspace create PROJECT_ID <span class="at">--provider</span> opensandbox</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> workspace refresh PROJECT_ID</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> tasks create PROJECT_ID <span class="at">--title</span> <span class="st">&quot;MVP&quot;</span> <span class="at">--prompt</span> <span class="st">&quot;Goal, constraints, acceptance checks…&quot;</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> tasks show PROJECT_ID TASK_ID</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> send PROJECT_ID <span class="at">--message</span> <span class="st">&quot;Explain your plan&quot;</span> <span class="at">--wait</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> runs PROJECT_ID RUN_ID <span class="at">--wait</span> <span class="at">--timeout-seconds</span> 60</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> <span class="at">--json</span> conversation PROJECT_ID</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> chat PROJECT_ID</span></code></pre></div>
+<p>New non-interactive commands return JSON; <code>--json</code> also covers older commands. <code>runs --after N</code> reads durable events. Bounded waits return <code>wait_timed_out: true</code> without resubmitting. <code>runs</code> returns JSON plus a nonzero exit for failed/interrupted Runs. Waiting for approval returns immediately; human chat or an explicitly authorized <code>approve ... --decision ...</code> answers the specific pending request. Device auth is nonblocking in JSON mode, so its verification link can be presented immediately. Cancellation currently applies to queued Tasks only. Run completion is not proof of accepted delivery or deployment.</p>
+<h2 id="schedules-and-recovery">Schedules and recovery</h2>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> schedules create PROJECT_ID <span class="at">--title</span> <span class="st">&quot;Daily check&quot;</span> <span class="at">--prompt</span> <span class="st">&quot;Observe and report; do not deploy&quot;</span> <span class="at">--every-seconds</span> 86400</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> schedules resume PROJECT_ID SCHEDULE_ID</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> schedules pause PROJECT_ID SCHEDULE_ID</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="ex">feynman</span> schedules create PROJECT_ID <span class="at">--title</span> <span class="st">&quot;One report&quot;</span> <span class="at">--prompt</span> <span class="st">&quot;Summarize&quot;</span> <span class="at">--at</span> <span class="st">&#39;2026-09-30T09:00:00+08:00&#39;</span> <span class="at">--enable</span></span></code></pre></div>
+<p>Plans default to paused. Enablement authorizes future turns, not new tool grants or automatic approvals. Intervals are 60 seconds to one year; <code>at</code> requires an RFC3339 timezone. With both options, <code>at</code> is the first occurrence. Intervals are delay-based from the scan, not wall-clock cron/calendar recurrences.</p>
+<p>Enqueue/advance is one SQLite transaction. Missed intervals coalesce; at most one pending Task per Schedule is retained. One-shots disable after enqueue. Busy Projects queue behind their active Run, including approvals; other Projects dispatch concurrently without backlog starvation. Task claim, Run linkage and message creation are atomic. Startup interrupts unfinished work while preserving queued tasks and the thread. Interrupted work is not auto-replayed: external effects may already exist. This is not exactly-once provider-side delivery.</p>
+<p>Pause affects future occurrences; cancel already queued Tasks separately. Running work is not implicitly killed. Session Heartbeat remains a separate liveness concept, with no new external heartbeat endpoint in this slice.</p>
+<h2 id="opensandbox-operator-setup">OpenSandbox operator setup</h2>
+<p>Build on the Docker host using the server’s Python environment and an already extracted <code>@openai/codex@0.157.1-linux-arm64</code> (or Linux x64) npm package:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> scripts/opensandbox/build_executor_image.py <span class="at">--package-dir</span> /path/to/package <span class="at">--dockerfile</span> infra/opensandbox/Dockerfile</span></code></pre></div>
+<p>Store a JSON file outside project files, mode <code>0600</code>, and set the local server’s <code>FEYNMAN_OPENSANDBOX_CONFIG</code> to its absolute path:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;base_url&quot;</span><span class="fu">:</span> <span class="st">&quot;http://127.0.0.1:18080/&quot;</span><span class="fu">,</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;api_key&quot;</span><span class="fu">:</span> <span class="st">&quot;OPERATOR_SECRET&quot;</span><span class="fu">,</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;image&quot;</span><span class="fu">:</span> <span class="st">&quot;feynman-codex-executor:0.157.1&quot;</span><span class="fu">,</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;executor_ssh_target&quot;</span><span class="fu">:</span> <span class="st">&quot;simonlong@spark-d304.tail242882.ts.net&quot;</span><span class="fu">,</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;allow_outer_sandbox_only&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">,</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;timeout_seconds&quot;</span><span class="fu">:</span> <span class="dv">1800</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>For Spark, keep an operator-managed lifecycle API forward running:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">ssh</span> <span class="at">-N</span> <span class="at">-L</span> 127.0.0.1:18080:127.0.0.1:18080 simonlong@spark-d304.tail242882.ts.net</span></code></pre></div>
+<p>Feynman owns per-Project Executor forwards, closed with the daemon. Omit the SSH target for a same-host provider. Only loopback endpoints and direct ports or <code>/proxy/44773</code> are accepted. Redirects, HTTP proxies, credential-bearing URLs and endpoint auth headers are rejected. The operator must ensure loopback publishing, dropped capabilities, no-new-privileges, resource limits and no host mounts. An endpoint string does not prove Docker settings.</p>
+<p>OpenSandbox 0.2.3 has no <code>publish_host</code> option; smoke uses a scoped in-memory override, not a daemon/package edit. Durable service setup remains an operator responsibility. Default public publishing is not secured by an SSH tunnel alone.</p>
+<p>Native tools bind a stable Project environment on thread start/resume and every turn. Local cwd is an app-server control directory. <code>environment/info</code> is checked before starting. Subagent inheritance was proven in the earlier native smoke; this version does not create a second long-lived Reviewer.</p>
+<p>Authorized work restores an owned missing/terminated sandbox onto its retained volume; ambiguous creation is reconciled by ownership metadata. Network/auth errors never trigger replacement or host fallback. <code>workspace restore</code> also supports explicit recovery. Paused Workspaces require explicit resume; tasks wait. Active Runs renew before expiry; idle sandboxes can expire. Mid-command expiration is not live migration or command replay. <code>workspace stop</code> pauses Docker memory/processes; it is not free scale-to-zero. There is no volume-delete command.</p>
+<h2 id="security-boundary">Security boundary</h2>
+<p>Restricted Docker cannot nest Codex bwrap. Remote threads use <code>:danger-full-access</code> <strong>inside the outer container</strong>, native <code>on-request</code>, and explicit operator consent. Local mode retains restricted <code>feynman_project</code>. Docker/runc is not gVisor or a VM; shared bridge networking does not isolate Projects’ network trust domains. Neighbor containers can reach unauthenticated Executor/execd services. Use trusted personal workloads only; dedicated networks, stronger isolation and authenticated transport are needed before untrusted tenants.</p>
+<p>Identity is still fixed local dev, not a remotely accessible multi-tenant service. Model auth stays in local Codex. Private DWS device auth is not mounted into containers. Project MCP/grants are preserved; login does not grant business tools. The image contains Codex/Python, not DWS/Drlee binaries. Native observation adapters keep credentials on the Server; fixed Sandbox Git clone briefly uses a credential-bearing process environment. Container root can observe that process: this is not a hostile-agent secrecy boundary. Approved workload env/tmpfs and usage leases are documented in <a href="environment-leases-memory.html">Environment, leases and memory</a>.</p>
+<h2 id="external-access-module">External Access module</h2>
+<p>The independent Rust module provides DWS, GitLab, Git, Slate and Drlee. Connection registration, project binding and business Tool Grant are separate. DWS search uses the explicitly verified device cache. Owners may explicitly import native GitLab login, a selected Slate Keychain profile or a single Drlee account. Slate browser PKCE and Drlee native browser login remain their actual protocols, not DWS device flows. Observation CLIs execute fixed reads on the local control plane. Git delegates its HTTPS Connection for <code>ls-remote</code> and fixed Sandbox-only clone; no authenticated fetch/push or SSH. Bindings expire (default 24h); revocation, disable and identity changes block new calls. Agent MCP can request access, not approve it. The <a href="../modules/external-access/index.html#real-smoke">2026-10-09 real smoke</a> verified native authorization, Agent reads, Sandbox clone and three local config tests; it did not test a full business environment. See <a href="../modules/external-access/index.html">External Access architecture and CLI</a>.</p>
+<h2 id="verification">Verification</h2>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> test <span class="at">--workspace</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> clippy <span class="at">--workspace</span> <span class="at">--all-targets</span> <span class="at">--</span> <span class="at">-D</span> warnings</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> build <span class="at">--workspace</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> unittest discover <span class="at">-s</span> scripts/smoke <span class="at">-p</span> test_project_manager.py <span class="at">-v</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> unittest discover <span class="at">-s</span> scripts/smoke <span class="at">-p</span> test_dws_authorization.py <span class="at">-v</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> <span class="at">-m</span> unittest discover <span class="at">-s</span> scripts/smoke <span class="at">-p</span> test_external_access.py <span class="at">-v</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> scripts/smoke/run_project_manager_smoke.py</span></code></pre></div>
+<p>The last command contacts the real provider and Spark. It creates two test Projects/sandboxes, verifies remote write, separate volumes, pause/resume, replacement and the same Main Agent thread after daemon restart. It cleans its explicit test containers/volumes and temporary service; image caches/evidence stay. Routine integration tests substitute upstream Codex/OpenSandbox only, not Feynman.</p>
+<p>Real smoke passed twice on 2026-09-29. The final expanded run took <strong>82.76 seconds</strong> (whole test, not cold start), including automatic recovery on the live harness and a real one-shot scheduled task. The earlier smaller run took 34.73 seconds, using Codex 0.157.1, OpenSandbox 0.2.3 and image <code>sha256:eaf7a7a242e05d30ba51681c8b1fa829054a2f555a4b2cb34631e2fc3cd7624b</code>. Final local evidence: <code>feynman-project-manager-smoke-wxqizb2g</code> in temporary storage; earlier evidence: <code>feynman-project-manager-smoke-d8n1rit6</code>. Lifecycle/volumes were checked against the <a href="https://github.com/opensandbox-group/OpenSandbox/blob/main/specs/sandbox-lifecycle.yml">official contract</a> and installed 0.2.3. See <a href="https://open-sandbox.ai/architecture/">OpenSandbox architecture</a> for the distinct guarantees of pause and retained-volume recovery.</p>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

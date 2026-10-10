@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use feynman_core::{
-    AgentRunStatus, ChatEvent, ConversationSnapshot, Project, ProjectToolAccess, RunFeed,
-    SendMessageResponse, ToolGrant,
+    AgentRunStatus, ChatEvent, ConversationSnapshot, DwsAuthorization, Project, ProjectToolAccess,
+    RunFeed, SendMessageResponse, ToolGrant,
 };
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -11,6 +11,14 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::{Duration, sleep};
+
+mod access;
+mod auth;
+mod automation;
+mod evaluation;
+mod feed;
+mod management;
+mod resources;
 
 #[derive(Parser)]
 #[command(
@@ -26,12 +34,136 @@ struct Cli {
         global = true
     )]
     server: String,
+    /// Machine-readable output for local harnesses. Never answers approvals implicitly.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Unified read-only external message inbox; not the Agent prompt-delivery queue.
+    Feed {
+        #[command(subcommand)]
+        command: feed::FeedCommand,
+    },
+    /// Versioned application environments; requests do not authorize themselves.
+    Env {
+        #[command(subcommand)]
+        command: resources::EnvironmentCommand,
+    },
+    /// Owner-only secret metadata and stdin import. No secret-get/export.
+    Secrets {
+        #[command(subcommand)]
+        command: resources::SecretCommand,
+    },
+    /// Inspect/renew/revoke usage leases, distinct from Provider token expiration.
+    Leases {
+        #[command(subcommand)]
+        command: resources::LeaseCommand,
+    },
+    /// Evidence-linked durable project and Agent memory.
+    Memory {
+        #[command(subcommand)]
+        command: resources::MemoryCommand,
+    },
+    /// Owner-managed durable Agent identities and capability allowlists.
+    Agents {
+        #[command(subcommand)]
+        command: automation::AgentCommand,
+    },
+    /// Isolated, durable fact-source registrations and paginated local history.
+    Sources {
+        #[command(subcommand)]
+        command: automation::SourceCommand,
+    },
+    /// Durable input queue and explicit unknown-delivery reconciliation.
+    Inbox {
+        #[command(subcommand)]
+        command: automation::InboxCommand,
+    },
+    /// Prepare an audited historical snapshot for a direction-only runtime.
+    Evaluation {
+        #[command(subcommand)]
+        command: evaluation::EvaluationCommand,
+    },
+    /// Authenticate the model runtime in Feynman's dedicated Codex home, not a SaaS user login.
+    Auth {
+        #[command(subcommand)]
+        command: auth::AuthCommand,
+    },
+    /// Manage explicit external accounts, project bindings and CLI access requests.
+    Access {
+        #[command(subcommand)]
+        command: access::AccessCommand,
+    },
+    /// Initialize the local user home without a running server or implicit login.
+    Init {
+        /// Explicitly copy only auth.json from this Codex home; never its config/history.
+        #[arg(long)]
+        import_codex_auth: Option<std::path::PathBuf>,
+    },
+    /// Show local filesystem paths without creating files or contacting the server.
+    Home,
+    /// Inspect every Project, or one Project's Main Agent, tasks and Workspace.
+    Status {
+        project_id: Option<String>,
+    },
+    /// Create, inspect and recover a Project's persistent execution environment.
+    Workspace {
+        #[command(subcommand)]
+        command: management::WorkspaceCommand,
+    },
+    /// Delegate durable work to a Project's Main Agent.
+    Tasks {
+        #[command(subcommand)]
+        command: management::TaskCommand,
+    },
+    /// Manage Project wake-ups; new plans are paused by default.
+    Schedules {
+        #[command(subcommand)]
+        command: management::ScheduleCommand,
+    },
+    /// Install the bundled manager Skill into a local harness.
+    Skill {
+        #[command(subcommand)]
+        command: management::SkillCommand,
+    },
+    /// Send one message without entering interactive chat.
+    Send {
+        project_id: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+    },
+    /// Inspect durable events. --wait is bounded and returns on approval requests.
+    Runs {
+        project_id: String,
+        run_id: String,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+    },
+    /// Answer a specific pending Run approval with an explicit decision.
+    Approve {
+        project_id: String,
+        run_id: String,
+        request_id: String,
+        #[arg(long, value_enum)]
+        decision: management::ApprovalDecision,
+    },
+    /// Manage DWS device-flow authorization without exposing credentials.
+    DwsAuth {
+        #[command(subcommand)]
+        command: DwsAuthCommand,
+    },
     Projects {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -55,6 +187,9 @@ enum ProjectCommand {
     Create {
         #[arg(long)]
         name: String,
+        /// Prepare a Project/Workspace first; create its Agent explicitly later.
+        #[arg(long)]
+        without_agent: bool,
     },
     Show {
         project_id: String,
@@ -63,17 +198,108 @@ enum ProjectCommand {
 
 #[derive(Subcommand)]
 enum ExternalToolCommand {
-    List { project_id: String },
-    Grant { project_id: String, tool_id: String },
-    Revoke { project_id: String, tool_id: String },
+    List {
+        project_id: String,
+    },
+    Grant {
+        project_id: String,
+        tool_id: String,
+    },
+    Revoke {
+        project_id: String,
+        tool_id: String,
+    },
+    Invoke {
+        project_id: String,
+        tool_id: String,
+        #[arg(long, default_value = "{}")]
+        arguments: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DwsAuthCommand {
+    Request {
+        project_id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        wait: bool,
+    },
+    List {
+        project_id: String,
+    },
+    Status {
+        project_id: String,
+        authorization_id: String,
+        #[arg(long)]
+        wait: bool,
+    },
+    Cancel {
+        project_id: String,
+        authorization_id: String,
+    },
+    Check {
+        project_id: String,
+        authorization_id: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Evaluation { command } = &cli.command {
+        return evaluation::handle(command);
+    }
+    if let Command::Auth { command } = &cli.command {
+        return auth::handle(command).await;
+    }
+    if matches!(&cli.command, Command::Init { .. } | Command::Home) {
+        let home = feynman_local::LocalHome::from_env()?;
+        if let Command::Init { import_codex_auth } = &cli.command {
+            if let Some(source) = import_codex_auth {
+                home.import_codex_auth(source)?;
+            } else {
+                home.initialize()?;
+            }
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "paths": home,
+                "initialized": home.codex_home.join("config.toml").is_file(),
+                "auth_cache_present": home.auth_cache_present(),
+                "auth_imported": matches!(&cli.command, Command::Init { import_codex_auth: Some(_) }),
+                "note": "Cache presence is not proof of valid login. CODEX_HOME is owned by Feynman; personal config and session history are not imported."
+            }))?
+        );
+        return Ok(());
+    }
     let client = Client::new();
     let base = cli.server.trim_end_matches('/').to_owned();
+    if let Command::Access { command } = &cli.command {
+        return access::handle(&base, command).await;
+    }
+    if let Command::Skill { command } = &cli.command {
+        return management::install_skill(command);
+    }
+    if feed::handle(&base, &cli.command, cli.json).await? {
+        return Ok(());
+    }
+    if management::handle(&client, &base, &cli.command).await? {
+        return Ok(());
+    }
+    if automation::handle(&client, &base, &cli.command).await? {
+        return Ok(());
+    }
+    if resources::handle(&client, &base, &cli.command).await? {
+        return Ok(());
+    }
+    if cli.json {
+        return management::json_command(&client, &base, &cli.command).await;
+    }
     match cli.command {
+        Command::DwsAuth { command } => dws_auth(&client, &base, command).await?,
         Command::Health => {
             let response: Value = get(&client, &format!("{base}/v1/health")).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
@@ -100,11 +326,14 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            ProjectCommand::Create { name } => {
+            ProjectCommand::Create {
+                name,
+                without_agent,
+            } => {
                 let response: Value = post(
                     &client,
                     &format!("{base}/v1/projects"),
-                    &json!({"name":name}),
+                    &json!({"name":name,"without_agent":without_agent}),
                 )
                 .await?;
                 let project: Project = serde_json::from_value(
@@ -154,11 +383,17 @@ async fn main() -> Result<()> {
                 project_id,
                 tool_id,
             } => {
-                let grant: ToolGrant = put(
+                let response: Value = put(
                     &client,
                     &format!("{base}/v1/projects/{project_id}/external-tools/{tool_id}"),
                 )
                 .await?;
+                let grant: ToolGrant = serde_json::from_value(
+                    response
+                        .get("grant")
+                        .context("server returned no grant")?
+                        .clone(),
+                )?;
                 println!("Granted {} to project {}", grant.tool_id, grant.project_id);
             }
             ExternalToolCommand::Revoke {
@@ -173,6 +408,21 @@ async fn main() -> Result<()> {
                     .await?;
                 check_response(response).await?;
                 println!("Revoked {tool_id} from project {project_id}");
+            }
+            ExternalToolCommand::Invoke {
+                project_id,
+                tool_id,
+                arguments,
+            } => {
+                let arguments: Value =
+                    serde_json::from_str(&arguments).context("arguments must be JSON")?;
+                let result: Value = post(
+                    &client,
+                    &format!("{base}/v1/projects/{project_id}/external-tools/{tool_id}/invoke"),
+                    &json!({"arguments": arguments}),
+                )
+                .await?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
             }
         },
         Command::Conversation { project_id } => {
@@ -197,8 +447,118 @@ async fn main() -> Result<()> {
             }
         }
         Command::Chat { project_id } => chat(&client, &base, &project_id).await?,
+        _ => unreachable!("management command already handled"),
     }
     Ok(())
+}
+
+async fn dws_auth(client: &Client, base: &str, command: DwsAuthCommand) -> Result<()> {
+    let (project_id, authorization_id, wait) = match command {
+        DwsAuthCommand::Request {
+            project_id,
+            reason,
+            wait,
+        } => {
+            let response: Value = post(
+                client,
+                &format!("{base}/v1/projects/{project_id}/dws-authorizations"),
+                &json!({"reason":reason}),
+            )
+            .await?;
+            let record: DwsAuthorization =
+                serde_json::from_value(response["authorization"].clone())?;
+            show_authorization(&record);
+            (project_id, record.id, wait)
+        }
+        DwsAuthCommand::List { project_id } => {
+            let response: Value = get(
+                client,
+                &format!("{base}/v1/projects/{project_id}/dws-authorizations"),
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+        DwsAuthCommand::Status {
+            project_id,
+            authorization_id,
+            wait,
+        } => (project_id, authorization_id, wait),
+        DwsAuthCommand::Cancel {
+            project_id,
+            authorization_id,
+        } => {
+            let response = check_response(
+                client
+                    .delete(format!(
+                        "{base}/v1/projects/{project_id}/dws-authorizations/{authorization_id}"
+                    ))
+                    .send()
+                    .await?,
+            )
+            .await?;
+            let value: Value = response.json().await?;
+            show_authorization(&serde_json::from_value(value["authorization"].clone())?);
+            return Ok(());
+        }
+        DwsAuthCommand::Check {
+            project_id,
+            authorization_id,
+        } => {
+            let value: Value = post(
+                client,
+                &format!(
+                    "{base}/v1/projects/{project_id}/dws-authorizations/{authorization_id}/check"
+                ),
+                &json!({}),
+            )
+            .await?;
+            show_authorization(&serde_json::from_value(value["authorization"].clone())?);
+            return Ok(());
+        }
+    };
+    let mut last = String::new();
+    loop {
+        let response: Value = get(
+            client,
+            &format!("{base}/v1/projects/{project_id}/dws-authorizations/{authorization_id}"),
+        )
+        .await?;
+        let record: DwsAuthorization = serde_json::from_value(response["authorization"].clone())?;
+        let current = serde_json::to_string(&record)?;
+        if current != last {
+            show_authorization(&record);
+            last = current;
+        }
+        if !wait || !record.status.is_pending() {
+            if wait && record.status != feynman_core::DwsAuthorizationStatus::Authorized {
+                bail!("authorization ended: {:?}", record.status);
+            }
+            return Ok(());
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn show_authorization(record: &DwsAuthorization) {
+    println!("DWS authorization {} · {:?}", record.id, record.status);
+    if let Some(uri) = record
+        .verification_uri_complete
+        .as_ref()
+        .or(record.verification_uri.as_ref())
+    {
+        println!("Open to authorize: {uri}");
+        if let Some(code) = &record.user_code {
+            println!("User code: {code}");
+        }
+        println!("Expires: {}", record.expires_at.to_rfc3339());
+    }
+    if let Some(identity) = &record.identity {
+        println!("Account: {}:{}", identity.corp_id, identity.user_id);
+    }
+    if let Some(code) = &record.error_code {
+        println!("State detail: {code}");
+    }
 }
 
 async fn chat(client: &Client, base: &str, project_id: &str) -> Result<()> {
@@ -223,6 +583,9 @@ async fn chat(client: &Client, base: &str, project_id: &str) -> Result<()> {
         );
     }
     println!("Type /exit to leave this conversation.");
+    // Authorization progresses independently of a model turn and remains visible while input is idle.
+    let _authorization_watcher =
+        watch_authorizations(client.clone(), base.into(), project_id.into());
     let mut input = String::new();
     let mut stdin = BufReader::new(tokio::io::stdin());
     if let Some(run) = snapshot.active_run {
@@ -279,6 +642,42 @@ async fn chat(client: &Client, base: &str, project_id: &str) -> Result<()> {
         follow_run(client, base, project_id, &submitted.run.id, 0, &mut stdin).await?;
     }
     Ok(())
+}
+
+struct AuthorizationWatcher(tokio::task::JoinHandle<()>);
+impl Drop for AuthorizationWatcher {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn watch_authorizations(client: Client, base: String, project_id: String) -> AuthorizationWatcher {
+    AuthorizationWatcher(tokio::spawn(async move {
+        let mut seen = std::collections::HashMap::<String, String>::new();
+        loop {
+            if let Ok(value) = get::<Value>(
+                &client,
+                &format!("{base}/v1/projects/{project_id}/dws-authorizations"),
+            )
+            .await
+                && let Some(items) = value["authorizations"].as_array()
+            {
+                for item in items {
+                    if let Ok(record) = serde_json::from_value::<DwsAuthorization>(item.clone())
+                        && (record.status.is_pending() || seen.contains_key(&record.id))
+                    {
+                        let fingerprint = format!("{:?}|{:?}", record.status, record.user_code);
+                        if seen.get(&record.id) != Some(&fingerprint) {
+                            println!();
+                            show_authorization(&record);
+                            seen.insert(record.id, fingerprint);
+                        }
+                    }
+                }
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+    }))
 }
 
 async fn follow_run(

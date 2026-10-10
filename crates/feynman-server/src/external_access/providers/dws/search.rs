@@ -21,13 +21,21 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(35);
 #[derive(Default)]
 pub struct DwsEnterpriseSearchAdapter {
     runner: Option<Box<dyn DwsCommandRunner>>,
+    pub access_server: Option<String>,
 }
 
 impl DwsEnterpriseSearchAdapter {
+    pub fn with_access_server(access_server: Option<String>) -> Self {
+        Self {
+            access_server,
+            ..Self::default()
+        }
+    }
     #[cfg(test)]
     fn with_runner(runner: impl DwsCommandRunner + 'static) -> Self {
         Self {
             runner: Some(Box::new(runner)),
+            access_server: None,
         }
     }
 
@@ -40,6 +48,7 @@ impl DwsEnterpriseSearchAdapter {
 impl ExternalToolAdapter for DwsEnterpriseSearchAdapter {
     fn definitions(&self) -> Vec<ExternalToolDefinition> {
         vec![ExternalToolDefinition {
+            read_only: true,
             id: TOOL_ID.into(),
             mcp_name: MCP_NAME.into(),
             name: "DWS 企业内容搜索".into(),
@@ -84,6 +93,10 @@ impl ExternalToolAdapter for DwsEnterpriseSearchAdapter {
             return Err(PlatformError::InvalidInput(
                 "unsupported DWS external tool".into(),
             ));
+        }
+        if let Some(base) = &self.access_server {
+            parse_arguments(arguments.clone())?;
+            return super::super::super::proxy::invoke(base, context, tool_id, arguments).await;
         }
         let arguments = parse_arguments(arguments)?;
         let args = command_args(&arguments);
@@ -204,6 +217,10 @@ fn command_args(arguments: &DwsSearchArguments) -> Vec<String> {
     args
 }
 
+pub(super) fn validated_args(value: Value) -> PlatformResult<Vec<String>> {
+    Ok(command_args(&parse_arguments(value)?))
+}
+
 #[async_trait]
 trait DwsCommandRunner: Send + Sync {
     async fn run(&self, args: &[String]) -> PlatformResult<Value>;
@@ -214,6 +231,9 @@ struct ProcessDwsCommandRunner;
 #[async_trait]
 impl DwsCommandRunner for ProcessDwsCommandRunner {
     async fn run(&self, args: &[String]) -> PlatformResult<Value> {
+        if std::env::var("FEYNMAN_ALLOW_LEGACY_DWS_PROFILE").as_deref() != Ok("1") {
+            return Err(PlatformError::Conflict("DWS requires an External Access server and explicit Connection binding; legacy host profile is disabled".into()));
+        }
         let executable: OsString =
             std::env::var_os("FEYNMAN_DWS_BIN").unwrap_or_else(|| OsString::from("dws"));
         let mut child = Command::new(executable)

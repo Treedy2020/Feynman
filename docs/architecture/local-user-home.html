@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Feynman 本地用户目录、专用 CODEX_HOME、认证初始化、数据与会话恢复，以及实现约定。">
+  <title>Feynman · 用户目录与实现细节</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="home" data-docs-root="..">
+<div class="page">
+  <header class="topbar"><a class="brand" href="local-first-architecture.html">FEYNMAN</a><nav class="nav" aria-label="文档导航"><a href="local-first-architecture.html">架构总览</a><a href="local-user-home.html" aria-current="page">用户目录与实现细节</a><a href="agent-runtime-workspace.html">演进架构图</a></nav></header>
+    <main id="content">
+    <section class="hero"><div class="eyebrow">Implementation / Local User Home</div><h1>Feynman 有自己的 Home。<br>也有自己的 Codex Home。</h1><p class="lead">不再把默认注册表放在启动时的工作目录，不再沿用个人 harness 的 CODEX_HOME。一个用户、一套本地目录，管理多个项目；每个项目独立 Thread 和 Workspace。</p></section>
+    <nav class="toc" aria-label="页内目录"><a href="#layout">目录布局</a><a href="#init">初始化与认证</a><a href="#runtime">运行时契约</a><a href="#recovery">恢复与兼容</a><a href="#contracts">接口与实现</a></nav>
+
+    <section class="section" id="layout"><span class="label">01 / FILESYSTEM CONTRACT</span><h2>默认位于用户目录，不依赖项目 cwd。</h2>
+      <pre aria-label="Feynman 本地目录树">~/.feynman/                         用户状态根目录 · 0700
+├── rust-platform.sqlite3           项目 / Agent / 消息 / Inbox / Schedule / 来源历史与采集范围 / 权限
+├── rust-platform.server.lock       当前数据库的单 daemon 文件锁
+├── codex/                          专用 CODEX_HOME · 0700
+│   ├── config.toml                 自有配置 · 初始化创建，不覆盖
+│   ├── auth.json                   可选认证缓存 · 导入文件为 0600
+│   ├── sessions/                   原生会话 JSONL · Codex 按需创建
+│   ├── archived_sessions/          原生归档 · Codex 按需创建
+│   └── …                          原生状态库、日志、缓存等
+├── private/                        私有服务数据 · 0700
+│   ├── dws/                       DWS 请求的独立认证缓存
+│   └── external-access/           Connection / Binding / 请求 / 审计与 0600 Token 文件
+└── workspaces/                     按需创建
+    └── &lt;tenant&gt;/&lt;project&gt;/         本地 Workspace 或 app-server 控制目录
+
+远端 Docker named volume            不在本机目录中
+└── /workspace/                     项目代码、文件、卷内依赖</pre>
+      <div class="note">这里的 <code>codex/</code> 当前是同一用户所有项目共用的运行时 Home，并非每项目一个 Home。项目隔离主要来自 Thread、Project 上下文、执行环境和工具 Grant；用户级原生缓存不构成强租户隔离。</div>
+      <p>来源记录在本地数据库按 tenant / project / agent / source_id 分区；不依赖远端 Workspace，也不是每个来源一份数据库文件。不同时间 create 的来源各有独立 ID、去重键与游标。Agent 的 <code>feynman_observations</code> MCP 可分页读取自身历史；所有者用 <code>sources read / captures</code> 查看。恢复与备份必须包含此数据库和 Codex Home，单独恢复容器不够。MCP 以只读连接打开现有库；升级迁移只由持锁 Server 执行。</p>
+      <div class="table-wrap"><table><thead><tr><th>配置项</th><th>规则</th></tr></thead><tbody>
+        <tr><td><code>FEYNMAN_HOME</code></td><td>用户根目录；默认 <code>$HOME/.feynman</code>（无 HOME 时可用 USERPROFILE）。建议自定义时使用绝对路径。</td></tr>
+        <tr><td><code>FEYNMAN_DATA_DIR</code></td><td>兼容旧配置的根目录别名。与 FEYNMAN_HOME 同时设置为不同路径会报错，不静默选择其中一个。</td></tr>
+        <tr><td><code>FEYNMAN_DB</code></td><td>可显式覆盖数据库位置。备份时也必须包括这个外部位置。</td></tr>
+        <tr><td><code>FEYNMAN_WORKSPACE_ROOT</code></td><td>可覆盖本地项目 / 控制目录；不会改变 Codex Home 或远端卷位置。</td></tr>
+        <tr><td>继承的 <code>CODEX_HOME</code></td><td>不用于项目 Agent。每次启动 app-server 都被覆盖为 <code>&lt;Feynman Home&gt;/codex</code>。</td></tr>
+        <tr><td>继承的 <code>CODEX_SQLITE_HOME</code></td><td>同样覆盖为专用 Codex Home，避免原生状态库仍写入个人 harness 目录。</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section class="section" id="init"><span class="label">02 / BOOTSTRAP</span><h2>先初始化，再选择认证方式。</h2>
+      <pre>cargo install --path crates/feynman-cli --locked
+cargo install --path crates/feynman-server --locked
+
+feynman home                       # 离线查看路径；不创建文件
+feynman init                       # 幂等创建用户目录与基础配置
+feynman skill install --skills-dir "$HOME/.agents/skills"</pre>
+      <p class="section-copy"><code>home</code> 和 <code>init</code> 无需 server，也不联系模型或远端服务。Server 启动也会初始化目录。新 Home 没有隐式登录；缓存文件存在不代表登录仍然有效。</p>
+      <div class="grid two">
+        <article class="card"><span class="label">OPTION A / 独立登录</span><h3>使用专用 Home 运行原生登录。</h3><pre>CODEX_HOME="$HOME/.feynman/codex" codex login --device-auth
+CODEX_HOME="$HOME/.feynman/codex" codex login status</pre><p>如自定义 FEYNMAN_HOME，以 <code>feynman home</code> 输出的 codex_home 为准。Device flow 需账户允许；也可用原生浏览器登录。</p></article>
+        <article class="card"><span class="label">OPTION B / 显式缓存导入</span><h3>只复制认证，不复制个人会话和配置。</h3><pre>feynman init --import-codex-auth /absolute/path/to/source-codex-home</pre><p>仅接受源目录的普通 <code>auth.json</code>；keyring 登录不适用。目标不存在时创建私有副本；相同内容可重复导入，不同内容拒绝覆盖。不使用符号链接。</p></article>
+      </div>
+      <div class="note warning">认证缓存含访问令牌，不能提交 Git、展示在响应中或放进 Sandbox。独立副本只保证不改写源文件，不保证同一账户的 OAuth 刷新彼此独立；失效时应重新登录。自定义 Provider 的配置需要另外配置专用 config.toml。</div>
+      <pre>feynman-server                    # 前台运行，默认 127.0.0.1:4317
+# 在另一个终端：
+feynman --json status
+feynman --json projects create --name "My project"</pre>
+    </section>
+
+    <section class="section" id="runtime"><span class="label">03 / SESSION BINDING</span><h2>会话 Home 与执行 cwd 是两个不同的东西。</h2>
+      <div class="grid two"><article class="card"><h3>本地 app-server</h3><p>每个项目按需启动自己的进程，显式绑定专用 CODEX_HOME 与 CODEX_SQLITE_HOME。模型认证、协议调度、原生上下文恢复留在本机。</p><p>项目级 Feynman MCP 和 permissions 仍通过子进程配置覆盖传入，不修改个人 Codex 的配置。</p></article><article class="card"><h3>远端原生 Executor</h3><p>environment/add 接入远端执行器；environment/info 核验 <code>/workspace</code>。thread/start、thread/resume、turn/start 均明确绑定远端环境。</p><p>本地 control cwd 不代表工具执行位置。远端不可用或归属不符时失败，不在本机接着执行。</p></article></div>
+      <div class="note">环境变量仅覆盖 Feynman 启动的子进程，不修改当前 shell 的 CODEX_HOME。独立 Home 也不隔离整个 OS 用户环境：Provider 环境变量、系统策略和共享 <code>~/.agents/skills</code> 仍可能影响运行。</div>
+      <p>应用配置由 <a href="external-access-abstraction.html#environment">ProjectEnvironment 申请与注入契约</a>管理，不复制操作者 env、模型凭据或 DWS 缓存；Agent 可控进程能读取应用秘密，需明确批准。<a href="external-access-abstraction.html#memory">长期记忆契约</a>保存证据关联的事实、判断与待办。当前实现见 <a href="environment-leases-memory.html">环境、租约与记忆</a>：元数据 / 修订在 SQLite，新业务秘密默认 macOS Keychain 或显式私有文件，受管进程状态 / 过滤日志在 private/resources/workloads，远端临时状态不在持久工作卷中。重启对账而不重新注入。</p>
+    </section>
+
+    <section class="section" id="recovery"><span class="label">04 / RECOVERY &amp; COMPATIBILITY</span><h2>迁移要保留数据，不制造新的“空项目”。</h2>
+      <ul>
+        <li>旧工作目录中的 <code>.feynman/</code> 不删除、不自动搬迁。若发现旧 Rust 注册表且新默认数据库尚不存在，server 拒绝隐式切换，要求明确选择路径。</li>
+        <li>旧 <code>platform.db</code>（TS 版本）不是当前 Rust 数据库格式；本轮不提供 TS 数据迁移。</li>
+        <li>可用 <code>FEYNMAN_HOME=/absolute/old/.feynman</code> 继续选择旧 Rust 根目录。既有根目录需私有权限；不会自动 chmod 用户已有目录。</li>
+        <li>选择旧数据库仍需补齐它对应的原生 Thread 日志。仅导入 auth 不会迁移会话；本轮没有自动跨 Codex Home 的会话迁移器。</li>
+        <li>Thread 恢复失败会明确报错，保留 Thread ID 和历史，不默默创建新会话；Sandbox 恢复不能代替 Agent 上下文恢复。</li>
+      </ul>
+      <div class="steps"><div class="step"><strong>停止本地 server</strong><p>先停止新任务与调度，正常关闭进程。不要只复制正在写入的主数据库文件。</p></div><div class="step"><strong>备份本地状态</strong><p>整个用户 Home，包括数据库及尚存在的 WAL / SHM、Codex Home 和私有数据；另包含覆盖到目录外的路径。</p></div><div class="step"><strong>备份远端卷</strong><p>Docker named volume 单独保存；本地 Home 不包含远端项目文件，卷也不包含 Agent 历史。</p></div><div class="step"><strong>核验后恢复工作</strong><p>还原路径、权限、运行时和 Provider 配置。确认 Thread / 文件对应，再决定是否重试 interrupted 工作。</p></div></div>
+      <div class="note warning">Home / codex / private 目录要求 Unix 私有权限；新建为 0700，导入文件为 0600。已有公共目录、符号链接或不同认证文件会被拒绝，不覆盖原文件。这不是加密备份或 OS 级账号认证。</div>
+    </section>
+
+    <section class="section" id="contracts"><span class="label">05 / IMPLEMENTATION MAP</span><h2>少造协议，明确每一层的职责。</h2>
+      <div class="table-wrap"><table><thead><tr><th>模块</th><th>职责</th></tr></thead><tbody>
+        <tr><td><code>feynman-local</code></td><td>CLI 与 server 共享的用户目录解析、私有目录初始化、显式认证缓存导入；不承担业务领域状态。</td></tr>
+        <tr><td><code>feynman-core</code></td><td>Project / Conversation / Run / Task / Schedule 和 Provider / Runtime 抽象。</td></tr>
+        <tr><td><code>feynman-server</code></td><td>SQLite、HTTP、调度器、Codex app-server、OpenSandbox 生命周期与项目级 MCP。</td></tr>
+        <tr><td><code>feynman</code></td><td>本地 init / home，以及 server 的项目、消息、任务、计划和授权管理入口。</td></tr>
+      </tbody></table></div>
+      <details><summary>最小 CLI / HTTP 工作接口</summary><pre>status                         GET /v1/status
+projects                       GET / POST /v1/projects
+conversation                   GET /v1/projects/{id}/conversation
+send                           POST /v1/projects/{id}/messages
+runs                           GET /v1/projects/{id}/runs/{run}/events
+workspace                      GET / POST /v1/projects/{id}/workspace
+workspace actions              POST /v1/projects/{id}/workspace/actions
+tasks                          GET / POST /v1/projects/{id}/tasks
+schedules                      GET / POST /v1/projects/{id}/schedules
+schedule pause / resume        PUT /v1/projects/{id}/schedules/{schedule}
+init / home                    本地文件系统命令，不走 HTTP</pre></details>
+      <p class="section-copy" style="margin-top:20px">原生 Runtime 基线为 Codex 0.157.1，远端 Provider smoke 基线为 OpenSandbox 0.2.3。专用 Home 已用真实 Codex 验证 JSONL 保存及重启接续，未调用模型或导入个人认证；原生日志按历史活动延迟创建，不保证 thread/start 一返回就落盘。文档不把实验接口写成永久稳定契约；定时计划不是 cron，Heartbeat 也不是自动产生业务任务。</p>
+    </section>
+    <section class="section sources"><h3>参考与操作说明</h3><ul><li><a href="local-first-main-agent-v1.html">完整操作说明与 OpenSandbox 配置</a></li><li><a href="https://learn.chatgpt.com/docs/config-file/config-advanced">OpenAI 官方文档：配置与状态位置</a></li><li><a href="https://learn.chatgpt.com/docs/auth">OpenAI 官方文档：认证缓存与 device 登录</a></li><li><a href="https://learn.chatgpt.com/docs/app-server">OpenAI 官方文档：持久化 Thread 与原生恢复</a></li></ul></section>
+  </main>
+  <footer><a href="local-first-architecture.html">← 返回架构总览</a><span>Feynman · 本地用户目录实现 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="单次实测和当时官方资料，不是启动 SLA。文件恢复、进程恢复与 Agent 会话恢复是不同保证。">
+  <title>Feynman Docs · GKE 模型与启动</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="gke-model" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status historical">历史记录 · 2026-09-28</span><h1>GKE 模型与启动</h1><p class="lead">单次实测和当时官方资料，不是启动 SLA。文件恢复、进程恢复与 Agent 会话恢复是不同保证。</p></section>
+    <nav class="doc-outline" aria-label="本页章节"><a href="#单次实测">单次实测</a></nav>
+    <article class="doc-body"><p class="source-title" id="gke-sandbox-模型与启动2026-09-28">GKE Sandbox 模型与启动（2026-09-28）</p>
+<ul>
+<li>Sandbox 管单个有状态 Pod；GKE 要求 gVisor，PVC 持久化文件。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/machine-learning/agent-sandbox">概念</a>、<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox">部署</a>、<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-storage">存储</a>。</li>
+<li>direct creation 不用池；SandboxTemplate 定义配置，SandboxWarmPool 保有就绪实例，SandboxClaim 领取。v1beta1 Claim 指向 WarmPool，旧版指向 Template。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox">部署/迁移</a></li>
+<li>官方 warm &lt;1s 指预热实例分配，不是冷启动或完整 E2E 承诺。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/concepts/machine-learning/agent-sandbox">Warm Pools</a></li>
+<li>直接创建的 stateful 环境需 PVC attach/mount；官方称磁盘附加有多秒延迟，故 E2E 可能更长（推论）。池中绑定存储另需自定义脚本与特权 DaemonSet。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-storage">存储</a></li>
+<li>PVC 恢复文件不等于恢复进程/Agent 会话（推论）；内存状态恢复另涉及 Pod snapshots。<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-storage">存储</a>、<a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-pod-snapshots">快照</a>。</li>
+<li><a href="gke-sandbox-smoke-2026-09-28.html">smoke</a> 与<a href="../../scripts/smoke/gke_sandbox.yaml">配置</a>：直接 Sandbox+gVisor+PVC；Agent 运行时仍在宿主，未放进沙盒，无 warm pool；仅验证读取，未测 warm pool/PVC 恢复。</li>
+</ul>
+<h2 id="单次实测">单次实测</h2>
+<p>来源：主 Agent 转交的上一轮工具现场输出；本次未重测。</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>阶段</th>
+<th>现场证据与计时边界（UTC）</th>
+<th>耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>集群创建</td>
+<td><code>gcloud CREATE_CLUSTER</code> operation <code>operation-1790587080710-16f97cff-4ff9-41c8-a346-5fc228e20a4d</code>，只读 describe 返回 <code>DONE</code>；startTime <code>2026-09-28T09:18:00.710692424Z</code> → endTime <code>2026-09-28T09:25:56.163722182Z</code></td>
+<td>7分55.453秒</td>
+</tr>
+<tr>
+<td>控制器运行态 → Ready</td>
+<td>先前 <code>kubectl get Sandbox.status</code>：NotSuspended transition <code>2026-09-28T09:38:42Z</code> → Ready=True transition <code>2026-09-28T09:41:19Z</code></td>
+<td>约157秒（约2分40秒）</td>
+</tr>
+</tbody>
+</table>
+<p>第二行包含首次 gVisor 节点扩容、镜像拉取及新建 10Gi PVC；缺 <code>metadata.creationTimestamp</code> 存档，不能称精确 API 创建到 Ready。单次样本非 SLA，不含调试和用户中断，也不是 warm pool/PVC 恢复实测。集群已销毁，不重建重复测试。</p>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

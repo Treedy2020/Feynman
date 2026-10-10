@@ -1,6 +1,14 @@
 # Rust Backend and CLI — V1 Implementation Boundary
 
-This document records the first runnable Rust slice. It includes the provider-neutral external-tool seam and a local DWS read-only search adapter. Production authentication, centrally managed external-source connections/credentials, and remote sandbox orchestration remain explicit follow-up work.
+This document records the original Rust slice. The current
+[local-first Main Agent architecture](local-first-main-agent-v1.md) adds Skill/CLI
+delegation, Project Tasks/Schedules, and OpenSandbox native Workspace orchestration.
+The local-only runtime details below describe that original adapter.
+
+The subsequent [DWS device authorization slice](dws-device-authorization-v1.md)
+adds project-scoped asynchronous sign-in, public links/status, and a local private
+credential store. It does not implement provider revocation, sandbox credential
+delivery, or automatic business-tool grants.
 
 ## Runtime path
 
@@ -15,7 +23,7 @@ feynman CLI
                                             ├─ normalized events → durable run event log
                                             └─ project MCP (per Codex process)
                                                  └─ ExternalToolService (Tool Grant check)
-                                                      └─ DWS adapter → host `dws` profile
+                                                      └─ External Access → explicitly bound CLI account
 ```
 
 The CLI submits a message, receives an `AgentRun`, then reads its ordered event feed using `after=<sequence>`. If the terminal disconnects, it can resume from the last sequence. The feed is persisted; it does not depend on a live SSE connection.
@@ -31,6 +39,14 @@ The CLI submits a message, receives an `AgentRun`, then reads its ordered event 
 
 ## HTTP contract
 
+The current extension exposes `GET /v1/status`, `GET /v1/projects/{id}/status`,
+`GET/POST /v1/projects/{id}/workspace`, `POST .../workspace/actions`,
+`GET/POST .../tasks`, `GET/DELETE .../tasks/{task_id}`, `GET/POST .../schedules`
+and `PUT .../schedules/{schedule_id}`. Task requests contain `title`/`prompt`;
+Schedules add `interval_seconds`, RFC3339 `at`, and `enabled` (false by default).
+Workspace creation takes only `provider`; private connection/image configuration
+belongs to the operator, not the caller. Actions are refresh/stop/resume/restore/renew.
+
 | Route | Purpose |
 | --- | --- |
 | `GET /v1/health` | Local server health |
@@ -40,6 +56,7 @@ The CLI submits a message, receives an `AgentRun`, then reads its ordered event 
 | `GET /v1/projects/{project_id}/external-tools` | List known external tools and this Project's grants |
 | `PUT /v1/projects/{project_id}/external-tools/{tool_id}` | Grant a known external tool to this Project |
 | `DELETE /v1/projects/{project_id}/external-tools/{tool_id}` | Revoke a Project's tool grant |
+| `POST /v1/projects/{project_id}/external-tools/{tool_id}/invoke` | Invoke a granted typed tool; body is `{ "arguments": { ... } }` |
 | `GET /v1/projects/{project_id}/conversation` | Read conversation, messages, runs |
 | `POST /v1/projects/{project_id}/messages` | Create a message and start an Agent Run |
 | `GET /v1/projects/{project_id}/runs/{run_id}/events?after=N` | Read run status and events after cursor N |
@@ -55,6 +72,7 @@ feynman --server URL projects show PROJECT_ID
 feynman --server URL external-tools list PROJECT_ID
 feynman --server URL external-tools grant PROJECT_ID dws.aisearch.enterprise
 feynman --server URL external-tools revoke PROJECT_ID dws.aisearch.enterprise
+feynman --server URL external-tools invoke PROJECT_ID TOOL_ID --arguments '{"operation":"list"}'
 feynman --server URL conversation PROJECT_ID
 feynman --server URL chat PROJECT_ID
 ```
@@ -65,9 +83,9 @@ feynman --server URL chat PROJECT_ID
 
 The current `DevIdentityProvider` supplies only the local development Principal (`local-user` in Tenant `local`). The server refuses any non-loopback bind until a real identity provider is configured. It does not accept a tenant ID from CLI flags or request bodies. Therefore this is a tenant-isolated local development foundation, not yet a remotely usable multi-tenant service.
 
-Each Codex turn requests native `onRequest` approvals, uses `workspaceWrite` with readable/writable roots restricted to that Project's canonical Workspace path, and disables in-sandbox network access. The server injects the Feynman MCP bridge into only that Codex process with config overrides; it does not modify global Codex configuration. The bridge exposes only fixed, typed external-tool operations and checks the Project's `Tool Grant` for every invocation. An ungranted call is denied with CLI guidance; after an owner grants access, the Agent can call it in a later turn.
+The adapter targets Codex CLI 0.157.1. Every thread/resume/turn selects `permissions: "feynman_project"` and native `on-request` approvals. A per-process Permission Profile replaces the removed restricted-read `sandboxPolicy` fields: workspace writes, minimal platform reads and the resolved Codex executable, general filesystem read denial, no temporary-directory writes, and no direct network access. The server injects the profile and Feynman MCP bridge with config overrides; it does not modify global Codex configuration. The bridge and HTTP invocation endpoint expose only fixed, typed operations and check the Project's `Tool Grant` for every invocation. An ungranted call is denied with CLI guidance; after an owner grants access, the Agent can call it in a later turn. See [official Permission Profile documentation](https://learn.chatgpt.com/docs/permissions); validate wire values against the installed CLI's generated schema when upgrading.
 
-The first adapter, `dws.aisearch.enterprise`, invokes only `dws aisearch enterprise ... --format json` with allowlisted arguments. It is a read-only discovery search; it does not access or mutate the matched resource. The DWS CLI runs on the Feynman server host and uses that OS account's existing DWS profile. Credentials are not copied into the Agent Workspace. This local profile is a development shortcut, not the planned multi-tenant External Connection vault. DWS Tool Results include source and observation time but are not yet stored in the durable Evidence model. There is no per-call human approval prompt: the explicit, revocable project grant is the gate for this low-risk read operation.
+The first adapter, `dws.aisearch.enterprise`, invokes only fixed enterprise search with allowlisted arguments. It discovers content without accessing or mutating the matched resource. The updated [External Access module](../modules/external-access/index.html) resolves an explicitly verified Connection and expiring ProjectCliBinding; no host-profile fallback. Credentials stay on the local server, not in the Agent Workspace. First-batch GitLab and Git use fixed read-only CLI operations under the same grant and binding checks. Tool Results include source and observation time, but are not yet persisted as durable Evidence. There is no per-call human approval prompt for these low-risk reads: explicit revocable Tool Grant plus active verified binding is the gate.
 
 Codex model authentication is still supplied by the local Codex profile available to the Server process; provider credential brokering is not implemented yet.
 

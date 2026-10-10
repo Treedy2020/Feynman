@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="历史测试记录，不代表有常驻服务。本轮仅改变阅读界面，没有重测或扩大安全保证。">
+  <title>Feynman Docs · 原生 Executor 验证</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="native" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status historical">历史验证 · 2026-09-28</span><h1>原生 Executor 验证</h1><p class="lead">历史测试记录，不代表有常驻服务。本轮仅改变阅读界面，没有重测或扩大安全保证。</p></section>
+    <nav class="doc-outline" aria-label="本页章节"><a href="#实际拓扑">实际拓扑</a><a href="#验收与证据">验收与证据</a><a href="#实测边界与安全限制">实测边界与安全限制</a><a href="#清理与复跑">清理与复跑</a><a href="#对-feynman-下一步的影响">对 Feynman 下一步的影响</a></nav>
+    <article class="doc-body"><p class="source-title" id="原生-codex-executor会话调度与执行环境分离-smoke">原生 Codex Executor：会话调度与执行环境分离 Smoke</p>
+<p>日期：2026-09-28。结论：<strong>本机 Codex app-server 与 Spark 上 OpenSandbox 容器内 Codex exec-server 已真实分离；用户指定的 1–4 项验收均通过。</strong></p>
+<p>这次验证走 Codex 原生环境协议，不是此前的文件 MCP。Feynman Rust 后端/CLI 的产品运行路径没有切换；新增 Python 文件仅用于 operator 级部署与集成验收。</p>
+<h2 id="实际拓扑">实际拓扑</h2>
+<pre class="text"><code>本机 macOS
+  Codex app-server 0.157.1
+  主 Agent / 两个 Sub-Agent / 模型认证 / 持久会话历史
+          |
+          | 原生 Executor 协议，SSH loopback tunnel
+          v
+Spark ARM64 / OpenSandbox 0.2.3 / Docker runc
+  Codex exec-server 0.157.1
+  原生 Shell / apply_patch / Python unittest
+          |
+          +-- /workspace -&gt; 同一个 Docker named volume</code></pre>
+<p><code>initialize</code> 开启 <code>experimentalApi</code>；<code>environment/add</code> 注册 <code>execServerUrl</code>； <code>environment/info</code> 返回 <code>/bin/bash</code>、<code>file:///workspace</code>；<code>thread/start</code> 和 <code>turn/start</code> 的 <code>environments</code> 显式绑定环境 ID 与 <code>/workspace</code>。 环境 ID 保持稳定，容器 ID、地址、执行器连接可以更换。</p>
+<p>协议以<strong>本机 0.157.1 生成的 Schema 和真实响应</strong>为准。 <a href="https://learn.chatgpt.com/docs/app-server">官方 App Server 文档</a>提供环境检查、 会话恢复与事件流的背景；其中的 remote TUI / Code Mode host 不应被等同于 本次原生远端 Executor 接入。</p>
+<h2 id="验收与证据">验收与证据</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>验收项</th>
+<th>实际验证</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. 主 Agent 远端执行</td>
+<td>pwd、uname、hostname、读取未出现在 prompt 的随机 marker；原生 apply_patch 修复加法；原生 unittest 成功</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>2. 原生 Sub-Agent 派发</td>
+<td>两个子 Agent 继承同一 environment 与 /workspace；各自读取 marker、写独立结果；读取两个子会话的原生命令历史</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>3. 宿主文件隔离</td>
+<td>对本机、Spark 宿主的 dummy canary 分别尝试读与 r+ 写；四项均失败；独立检查原文件未变</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>4. 恢复</td>
+<td>隧道断开不回退本机；重连、Executor 重启、容器替换、app-server 重启后继续同一 thread，重新读文件并测试</td>
+<td>通过</td>
+</tr>
+</tbody>
+</table>
+<p>恢复前先给主 Agent 一个<strong>仅存在对话中、禁止写入文件的随机口令</strong>。 每次恢复均要求重新执行命令、读取 Workspace marker、运行 unittest，并返回 记住的口令。Workspace 文件快照保持一致；容器替换后 hostname 改变。 因此“文件仍存在”与“会话上下文仍连续”有分别的真实证据。</p>
+<p>首次完整 run 的独立核对结果：</p>
+<ul>
+<li>主会话 thread ID：<code>01a0e7fb-dbc8-7bf0-91dd-f4d22061caa5</code>。</li>
+<li>两个子会话均存在独立 <code>commandExecution</code> 和相同环境绑定。</li>
+<li><strong>15 条完成的原生命令</strong>，cwd 全部为 <code>/workspace</code>；<strong>0 次 MCP 调用</strong>。</li>
+<li>原生文件修改路径为 <code>/workspace/calculator.py</code>。</li>
+<li>隧道断开后状态为 <code>disconnected</code>；命令因远端连接超时失败，未改用本机。</li>
+<li>四种恢复后均继续原 thread，返回相同 marker/会话口令，测试成功。</li>
+<li>容器重建、复制 Executor、启动、建立隧道及原生环境绑定：<strong>1.36 秒</strong>。</li>
+<li>全量验收加清理：<strong>123.61 秒</strong>，其中包括实际模型回合和断线等待。</li>
+</ul>
+<p>上述是单次暖缓存 Smoke，不是冷启动指标或生产 SLO。 完整本地证据目录： <code>/var/folders/tb/bxhyq9ld1gg6lpb97zk98m8c0000gn/T/feynman-native-smoke-zses1kps/</code>， 包括 <code>verification.json</code>、<code>native-events.jsonl</code>、<code>subagent-threads.json</code> 和 各阶段答案。远端 operator 日志目录：<code>/tmp/feynman-os-run-ViCyXCkk/</code>。 仓库不保存真实凭证或原始随机 marker/口令。</p>
+<p>加固后再次完整复跑也通过：子 Agent 验收必须在其<strong>自己的 thread 事件</strong>中找到 远端 hostname，不能用继承的父会话历史充当执行证据；清理步骤即使部分失败也会 继续清理其他资源，并将整个验收标记为失败。本次独立核对：</p>
+<ul>
+<li>主 thread：<code>01a0e800-ec28-7a10-ab48-5f12fab794fa</code>，四项验收和四种恢复均通过。</li>
+<li><strong>17 条完成的原生命令</strong>，cwd 全部为 <code>/workspace</code>；<strong>0 次 MCP 调用</strong>。</li>
+<li>原生 patch 修改 <code>/workspace/calculator.py</code> 和子 Agent 的 <code>/workspace/subagent-b.json</code>。</li>
+<li>暖缓存容器重建与环境重新绑定 <strong>1.23 秒</strong>；全量验收加清理 <strong>121.56 秒</strong>。</li>
+<li>清理后无测试容器或 Volume；再次独立确认宿主无临时服务 listener，原服务健康。</li>
+</ul>
+<p>复跑证据目录： <code>/var/folders/tb/bxhyq9ld1gg6lpb97zk98m8c0000gn/T/feynman-native-smoke-vc4o82ht/</code>； 远端日志目录：<code>/tmp/feynman-os-run-8T45Omx1/</code>。 <code>verification.json</code> 的 <code>last_runtime_*</code> 仅统计重启后的最后一个 app-server； 上述全量事件数独立统计整个 <code>native-events.jsonl</code>，包含重启前后的全部阶段。</p>
+<p>TDD 在用户确认的原生协议边界按四个纵向切片执行：各验收先失败，再补对应 连接/检查步骤，最后分别通过。额外验证：Python 编译、既有 GKE 工具边界测试、 <code>cargo test --workspace</code>（14 项 Rust 测试）和 <code>git diff --check</code> 通过。 真实集成测试默认跳过，必须显式 opt-in；跳过不能被报告为一次真实 Smoke 通过。</p>
+<h2 id="实测边界与安全限制">实测边界与安全限制</h2>
+<ol type="1">
+<li><strong>内层 bwrap 不可用。</strong> 普通 Docker 的限制拒绝创建用户命名空间；带 workspace permission profile 的线程在加载远端 AGENTS.md 时即失败。 未改变 Spark 内核配置、未添加 SYS_ADMIN、未启用 privileged，也未重启 Docker。 本次明确采用远端线程 <code>:danger-full-access</code>，依赖外层 unprivileged Docker/runc 隔离。该模式确实移除内层 Codex 限制，不能当作 workspace-write 的替代安全证明。 <a href="https://learn.chatgpt.com/docs/permissions">官方 Permission Profile 定义</a>。</li>
+<li><strong>隔离检查不是逃逸审计。</strong> 无宿主 bind mount、Docker socket、GPU 或认证文件； 容器 drop ALL capabilities、no-new-privileges、1 CPU / 1 GiB。 仍是共享内核的 runc，不是 gVisor/微虚机或生产多租户隔离。</li>
+<li><strong>Executor listener 是受信任测试接口。</strong> 容器内 44773 不发布到宿主；本机 经 SSH 转发访问其 bridge 地址。该原生 listener 无额外认证，不能暴露到公网或 与不可信 workload 共用的可达 bridge 网络。生产需独立网络与认证边界。</li>
+<li><strong>恢复由 operator 实施。</strong> 容器更换后重新复制 Executor 并注册连接；app-server 更换后重新注册环境，再 <code>thread/resume</code>。尚未实现 Feynman 的自动生命周期恢复。</li>
+<li><strong>持久化不是进程 checkpoint。</strong> <code>/workspace</code> 文件由 Volume 保留，中央会话由 本机 Codex runtime home 保留；容器根文件系统、PTY、正在运行的进程和任意系统 安装状态没有被承诺恢复。客户端 <code>fs/*</code>/<code>process/*</code> RPC 也没有被验证为远端 API。</li>
+<li><strong>原生事件形状需兼容。</strong> 本版本派发使用 <code>subAgentActivity(kind=started)</code>；不能 只识别旧 <code>collabAgentToolCall(tool=spawnAgent)</code>。只取 <code>final_answer</code> 作为答案， 避免把 commentary 混入结构化验收结果。</li>
+</ol>
+<h2 id="清理与复跑">清理与复跑</h2>
+<p>已删除本次测试容器与 named volume，停止临时 OpenSandbox 服务、本机 app-server 和 SSH tunnels。独立检查无 fixture-labelled 容器/volume，Spark 的 18080/44773 无宿主 listener；原 <code>uptime-kuma</code> 仍健康。没有创建 GKE 或使用 GPU。 测试 Volume 中只有 dummy Workspace 数据，删除不可恢复；日志、包缓存和私有 会话证据仍保留，且无临时认证链接。</p>
+<p>复跑方法见 <a href="../testing/smoke-guide.html#native-codex-executor-separation-smoke">Native Executor Smoke 操作说明</a>。</p>
+<h2 id="对-feynman-下一步的影响">对 Feynman 下一步的影响</h2>
+<p>可以优先复用原生 Executor，不必自建 Shell/apply_patch/Sub-Agent 工具集合。 接入 Rust 产品前仍需实现：持久化项目/会话与 Volume、环境 ID 的关联；容器地址 变化后的原生连接重新注册；启动时同一 thread 的恢复；连接状态与 Session Heartbeat 的映射；断线/超时可见性；生产隔离与凭证边界。</p>
+<p>外部观测渠道的凭证仍由中心 Feynman broker 管理。长期独立 Reviewer 需另一个 Session/Workspace，不能因为普通 Sub-Agent 共享环境已通过，就将 Reviewer 也接到 Generator 的可写现场。</p>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

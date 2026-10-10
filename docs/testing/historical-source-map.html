@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="EDC 与 Cohort 的真实消息、附件、代码版本关系及首批迭代方向测试候选。">
+  <title>历史事实与版本映射 · Feynman Docs</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="historical-source-map" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero">
+      <span class="doc-status">真实来源已采集 · Case 待人工定标 · 2026-09-30</span>
+      <h1>让消息、文件和版本形成证据链。</h1>
+      <p class="lead">EDC 以相关群、王子晨与王栋的沟通为线索；Cohort 以杨睿仪与你的单聊反馈为主。先从事实选 Case，再确定代码基线和截止点，不再仅从 tag diff 倒推需求。以下是评估端的来源映射，不是被测 Agent 的提示词或答案包。</p>
+      <p class="note warning">本页含后续提交、用户确认和参考版本，只给评估人阅读。真实消息、临床附件及可能包含凭据的原始材料存放在 git 忽略的私有目录，不嵌入本文，不挂载给被测 Agent。已执行 E-01、C-01 和 E-01 合成做法对照的首轮精选样本，见 <a href="mvp-validation-20260930.html">初版验证记录</a>；未修改业务项目代码或发布，不代表完整历史评估通过。</p>
+      <p><a href="iteration-direction.html">← 迭代方向测试设计</a></p>
+      <p><a href="edc-evaluation-pack.html">EDC 专用证据包与评分表（2026-10-08 整理）</a>：实际裁剪、上下文缺口与准备状态以该页为准。</p>
+    </section>
+    <nav class="toc" aria-label="本页目录"><a href="#sources">采集边界</a><a href="#edc">EDC Cases</a><a href="#cohort">Cohort Cases</a><a href="#technical-judgment">技术判断与对照</a><a href="#versions">版本关系</a><a href="#readiness">运行前准备</a></nav>
+
+    <section class="section" id="sources">
+      <span class="label">同一已认证账号 · 只读采集</span>
+      <h2>覆盖指定会话，不声称覆盖整个项目历史。</h2>
+      <p>已唯一解析杨睿仪、王子晨、王栋的身份；全部使用同一组织下当前账号。共保存 11 个有界查询快照，返回 648 条消息、下载 108 个可识别资源；消息均为 <code>complete=true</code>、<code>hasMore=false</code>，消息与资源失败项均为 0。资源数量是各查询 ledger 合计，不表示跨查询去重后的资产数。</p>
+      <table>
+        <thead><tr><th>来源</th><th>采集区间 · Asia/Shanghai · [start,end)</th><th>返回结果</th><th>如何使用</th></tr></thead>
+        <tbody>
+          <tr><td>杨睿仪与你的单聊</td><td>08-31 00:00 → 09-23 00:00</td><td>276 条 / 32 个资源</td><td>主要需求线；保留你们双方的澄清、纠正和上线反馈。具体患者信息不进入公开测试说明。</td></tr>
+          <tr><td>EDC业务技术群</td><td>09-15 00:00 → 09-24 00:00</td><td>343 条 / 76 个资源</td><td>王栋 150 条、王子晨 72 条；辅助对齐主系统发布、接口契约与助手适配责任。</td></tr>
+          <tr><td>王子晨与你的单聊</td><td>08-26 00:00 → 09-24 00:00</td><td>28 条 / 0 个可识别资源</td><td>9/8 的会议摘要是重要需求线索；其他项目的闲聊作为归属过滤对照，不升级为 EDC 需求。</td></tr>
+          <tr><td>王栋与你的单聊</td><td>08-26 00:00 → 09-24 00:00</td><td>0 条</td><td>只说明本次查询无命中。已从业务群取得他提供的接口文档，不据此断言你们从未单聊。</td></tr>
+          <tr><td>EDC上海讨论群</td><td>09-15 00:00 → 09-24 00:00</td><td>1 条</td><td>含环境/访问相关信息，不把其中认证材料当作 Agent 获权；不在本文复述。</td></tr>
+          <tr><td>EDC、EDC服务器</td><td>09-15 00:00 → 09-24 00:00</td><td>各 0 条</td><td>保留查询范围与空结果，不外推为整个历史无需求。</td></tr>
+          <tr><td>EDC UAT、EDC dvp-formula</td><td>各查 08-26 → 09-01、09-15 → 09-24</td><td>4 个快照均 0 条</td><td>早期访视范围候选没有从这些窗口取得直接需求证据，暂不作为首轮首选。</td></tr>
+        </tbody>
+      </table>
+      <p class="note">“所有可识别资源下载成功”不等于“所有分享文件都已恢复”。单聊中的若干 <code>[文件夹]</code> 分享未提供可下载的 resourceRefs，原始临床文件夹尚未读取；会议录音/完整转写也尚未读取。涉及这些材料的医学结果验收仍不完备，文字需求方向评估可以单独成立。</p>
+      <details><summary>私有来源定位与关键资产 hash</summary>
+        <p>原始快照目录：<code>Feynman/.feynman/evaluation-evidence/20260930/</code>。已验证被 git 忽略，并收紧目录与文件的其他用户访问权限；不是版本库中可分发的 fixture。组名/人员 ID 映射需另存请求清单，部分空响应本身不带目标身份字段。</p>
+        <table><thead><tr><th>资产</th><th>SHA-256</th></tr></thead><tbody>
+          <tr><td>杨睿仪单聊 JSON</td><td><code>6c8096c27d667f08f4c25098e966bef080ad378eb4a57fa7cf856e199b0a2b3d</code></td></tr>
+          <tr><td>EDC业务技术群 JSON</td><td><code>fa15d2a1381ca96622ac746e5f4bc0e02f2d469e5be7c9968e27b503e9b47e8c</code></td></tr>
+          <tr><td>Cohort 邮件回复模板.docx</td><td><code>8e579e6eec7dbbda0a52a7106b11c2650a5ab09ab5e163714428c2325fcd85c4</code></td></tr>
+          <tr><td>logic_check_enrollment_no_guide.md</td><td><code>4ad4246d4a528a6fa38db0fe03f331379b447a86bf2de5526a176f347746f838</code></td></tr>
+          <tr><td>logic_check_standard_value_integration.md</td><td><code>4f03c202e6cc9087d6c40c85da4f4e89725a4b8d12f4dbc8d9ad0421fd81bb1c</code></td></tr>
+        </tbody></table>
+        <p>这些是本次取得的字节 hash，不单独证明历史文件从未修改。正式样本仍需审计附件版本、消息编辑状态及截止点可获得性。</p>
+      </details>
+    </section>
+
+    <section class="section" id="edc">
+      <span class="label">项目归属 · UAT 助手不是 EDC 主系统</span>
+      <h2>EDC：识别外部系统变化带来的适配任务。</h2>
+      <article class="card" id="edc-enrollment">
+        <span class="status">E-01 · 首轮推荐 · 能力与依赖识别</span>
+        <h3>状态改变与生成入组号</h3>
+        <p><strong>候选基线：</strong><code>v0.6.11 / 6b1d6b60…</code>。事实截止点建议 <code>2026-09-08 17:30 +08:00</code>。</p>
+        <p><strong>来源：</strong>王子晨单聊于 09-08 17:21:35 发来的会议摘要，<code>msg0R/2LNwq51K4AP7z6QDTBg==</code>。摘要要求 UAT 支持状态改变与入组号联动；编号在筛选中转为已入组时生成；随机化暂不纳入。</p>
+        <p><strong>希望 Agent 提出：</strong>检查已有动作支持的实际链路，而不是只看枚举是否存在；补齐状态变化的规划与验证、入组号动作和必要来源字段/上下文准备；验证系统生成编号、重复触发不覆盖，并明确随机化不在这次范围内。缺少接口细节时提出获取契约，而非猜测。</p>
+        <p><strong>评估端参考：</strong>09-08 18:10:45 的 <code>3d27048c</code> 增补状态动作测试，19:50:57 的 <code>12174058</code> 增补入组号 UAT；两者晚于候选截止点。后续代码经 <code>v0.6.13</code> 可定位，但该 tag 直到 09-22 才创建。</p>
+        <p><strong>硬边界：</strong>09-17 的入组号详细说明不能倒放进这个 09-08 Case；会议摘要不等于完整录音/转写，摘要中的业务约束须由你确认后成为黄金标准。</p>
+      </article>
+      <article class="card" id="edc-grouping" style="margin-top:20px">
+        <span class="status">E-02 · 扩展推荐 · 契约变化与冲突识别</span>
+        <h3>generateSerial 分组扩展与转换值</h3>
+        <p><strong>候选基线：</strong>09-10 已存在的 <code>b9328596…</code>（后来命名为 <code>v0.6.13</code>）。截止点建议 <code>2026-09-21 17:00 +08:00</code>；Agent 输入用 SHA，不附带当时尚不存在的 tag 名。</p>
+        <table><thead><tr><th>已获得的事实</th><th>message ID</th></tr></thead><tbody>
+          <tr><td>09-17 17:00:32，王栋提供入组号说明文件</td><td><code>msg5pEjK4YUcCutsChujCBVRg==</code></td></tr>
+          <tr><td>09-18 15:45:34，王栋提供转换值对接说明</td><td><code>msgpW61fr4pS3JezosUsklVLw==</code></td></tr>
+          <tr><td>09-21 15:25:01，发布说明列出 generateSerial 扩展与转换值</td><td><code>msg5CCRFWAJmegwHVxWZv0HHQ==</code></td></tr>
+          <tr><td>09-21 15:26:14，转换值并非只涉及实验室，也涉及配置单位组与标准单位的数值变量</td><td><code>msg2vAv3Z+48NHZGjg900/72w==</code></td></tr>
+          <tr><td>09-21 16:49:03～16:50:13，无标准单位或无转换公式时不存在转换值</td><td><code>msgZa4zBkAZW1NckLNbQ8fS7Q==</code><br><code>msgbM4o1jekCqqcH3vqxwLpkA==</code></td></tr>
+        </tbody></table>
+        <p><strong>基线代码依据：</strong><code>plugin/src/services/core/enrollment-number.ts</code> 的解析只接受 2/3 个基础参数，额外分组参数会导致 mode 无效。Agent 应发现需要扩展公式验证、分组数据准备与唯一性验证，不仅“增加一个函数名”。</p>
+        <p><strong>转换值方向：</strong>文档定义 <code>value_type=3</code> 读取 <code>convert_value</code>；值为空时不能回退原值。Agent 应评估 UAT 的元数据、选值/求解与运行验证需要哪些适配，包含数值变量和实验室变量，并将单位/转换公式作为前置条件。不得把修改 EDC 后端本身或全套建库功能直接纳入本仓库任务。</p>
+        <p class="note warning"><strong>真实的文档矛盾：</strong>入组号正文允许追加 <code>VarN</code> 分组参数，末尾 7.3 旧检查项却要求“超过 3 个参数失败”。合适方案应指出冲突、引用正文与较晚发布说明，并向王栋确认兼容契约；不能悄悄采用旧检查表，或只给笼统的“文档有问题”。</p>
+        <p><strong>参考与限制：</strong>09-22 19:41:50 的 <code>59097207</code>、后续 <code>v0.6.14</code> 涉及分组与单位等适配，但不能据此声称整个转换值需求均已完成。版本模型注释仍仅列 value_type 1/2，这只是核查线索，实际覆盖需独立验证。</p>
+      </article>
+      <details><summary>E-03 · 项目边界与需求变化对照</summary>
+        <p>09-20 有 DM 提出新增字段默认关联已关联访视；王栋起初要求 DM 达成一致。09-22 17:14:20 李红玲表示已确认同意，17:21:41 王栋明确仅针对“已关联访视的表单内后续新增变量”。这些涉及 EDC 建库配置，不应自动视作 EdcDataGeneration UAT 仓库的实现任务。</p>
+        <p>测试可分别给定达成一致前、后的两个截止点：希望 Agent 区分待决策项、主系统已决定的功能、助手需要检查的元数据/兼容影响。此处不要求本仓库改动与后续 EDC 主系统代码一致。</p>
+      </details>
+    </section>
+
+    <section class="section" id="cohort">
+      <span class="label">用户反馈 · 附件 · 澄清 · 后续确认</span>
+      <h2>Cohort：从杨睿仪的实际工作流程选样。</h2>
+      <article class="card" id="cohort-template">
+        <span class="status">C-01 · 首轮推荐 · 文档驱动的有限迭代</span>
+        <h3>邮件回复模板调整</h3>
+        <p><strong>候选基线：</strong><code>v0.9.3 / a8cd723c…</code>。截止点建议 <code>2026-09-22 14:05 +08:00</code>。</p>
+        <table><thead><tr><th>时间</th><th>事实与来源</th><th>被测可见性</th></tr></thead><tbody>
+          <tr><td>09-21 18:32:17</td><td>提出邮件模板调整；<code>msgBj4ewFX46nq4s17ramvqTw==</code></td><td>可见；此时结构细节仍不足。</td></tr>
+          <tr><td>09-21 18:34:08</td><td>表示次日整理文件；<code>msgTUB5hOV9KJKuReKQwGHgFw==</code></td><td>可见；不能提前臆造最终模板。</td></tr>
+          <tr><td>09-22 14:03:44</td><td>提供 <code>Cohort 邮件回复模板.docx</code>；<code>msgJokGmK6mrJ0YwKEE4cCTOA==</code></td><td>可见，文件已下载并读取。</td></tr>
+          <tr><td>09-22 14:27:53 → 14:40:08</td><td><code>ff7c84b</code> 模板实现提交 → <code>v0.9.4</code> tag</td><td>隐藏；用于评估参考。</td></tr>
+          <tr><td>09-22 15:47:02</td><td>你告知已换新模板；<code>msg2UiOssKYDVm2KnJ5upG5Wg==</code></td><td>隐藏；是沟通确认，不单独证明实际部署 SHA。</td></tr>
+        </tbody></table>
+        <p><strong>期望方向：</strong>从 DOCX 提炼“本轮审核资料 → 资料完整性 → 主要审核意见 → 审核结论”的结构；保留资料日期/版本、阶段、缺失与待确认状态；定位现有邮件生成与导出/Agent 沟通路径，检查不同路径是否一致。模板的示例患者、数值与方案阈值不应变成全局默认事实；模板更新不意味着修改原始入排标准或自动改变医学结论。</p>
+        <p><strong>天然对照：</strong>在相同固定代码上分别给“文件到达前”和“到达后”的输入。前者应提出合理问题或等待模板；后者应提出具体结构改造和验收，不能依旧停留在“让邮件更自然”。</p>
+      </article>
+      <article class="card" id="cohort-supplement" style="margin-top:20px">
+        <span class="status">C-02 · 第二轮 · 多条反馈合并与纠错</span>
+        <h3>同项目并行审核与补充材料继续审核</h3>
+        <p><strong>候选基线：</strong><code>v0.7.6 / 3f42305a…</code>，截止点建议 <code>2026-09-01 15:00 +08:00</code>。</p>
+        <p><strong>事实：</strong>08-31 18:14:57 提出同时审核多个患者（<code>msgqQWSEnQIsJJdh4MSTzb8PQ==</code>），随后确认是同一个项目；18:32:21 又指出资料阻断似乎并非并发导致（<code>msgHv7K0N3jb12POPS6fcg51A==</code>）。09-01 14:44:46 询问出报告后如何补充资料（<code>msg60mnRpNxzzwRn3nBLzsAvg==</code>），14:45:41 确认继续更新结论很有必要（<code>msg/UPSFYR5R/5bvtV/peeuBg==</code>）。</p>
+        <p><strong>期望方向：</strong>把并发容量与资料阻断分成两件事，不把用户已纠正的猜测当根因；提出同项目多任务隔离、明确并发上限/排队，以及基于上一轮加入补充材料并保留既往报告的流程。具体并发数不是用户已定案参数，应给理由或确认；不能因为参考实现后来选择 5 就要求 Agent 猜中 5。</p>
+        <p><strong>评估端参考：</strong>09-02 <code>784b8ba</code> / <code>2d176b0</code> 引入并发继续审核、增量轮次等；<code>v0.8.0</code> 的版本说明列出补充审核与并行任务。该 tag 还含项目统计等独立功能，不作为本 Case 必须需求。</p>
+        <p><strong>边界：</strong>本 Case 仅评估产品方向；原始文件夹分享未恢复，不能据此声称已完成患者结果复现。</p>
+      </article>
+      <article class="card" id="cohort-recovery" style="margin-top:20px">
+        <span class="status">C-03 · 扩展 · 不应错误放宽校验</span>
+        <h3>补充材料阻断理由与失败恢复</h3>
+        <p><strong>候选基线：</strong><code>v0.8.6 / 2383e6ef…</code>，截止点建议 <code>2026-09-08 16:50 +08:00</code>。该时点前已有临时排查/修复沟通，正式 fixture 需核查固定版本上的状态，不能把当时运行态直接等同于 tag。</p>
+        <p><strong>事实：</strong>16:18 的截图显示补充审核被关键阻断，提示调整资料后新建审核、不能按原材料重试；16:44:57 用户说明材料命名可能有误。16:48:42 明确表示判定逻辑可不改、说明理由即可（<code>msgaozVqhBLCGSPFzXL7liG8w==</code>），16:49:19 指出失败后无法更正补充资料继续上传（<code>msgOFobeO5vwALU6zbd4zCCAw==</code>）。你随后表示会改后者。</p>
+        <p><strong>期望方向：</strong>解释可操作的阻断原因，支持更正/替换后继续补审并保留前轮上下文；不把“继续处理”实现为跳过身份/材料校验，不因为早先的开发建议就忽略用户后来的纠正。</p>
+        <p><strong>参考：</strong>09-09 的 <code>c753d8f / 31ba0cb</code> 涉及补充轮次恢复。方向标准应由真实纠正消息确定，不要求复刻其他后续身份识别改动。</p>
+      </article>
+      <details><summary>其他已找到的阶段 · 适合后续细化</summary>
+        <ul>
+          <li>08-31：上传资料超过大小限制。时间上已有当天调整沟通；需要匹配调整前的实际代码/配置，不与之后并发 Case 混为同一根因。</li>
+          <li>09-17：报告已出但会话持续显示处理中、无法交互，随后提出中止能力；适合异常终态与用户控制的方案测试。</li>
+          <li>09-18：要求按材料的真实时间更新判断，并澄清是初审中的新旧混合材料，不是补审。适合“纠正前提、区分文件上传时间与临床事实时间”的测试。</li>
+          <li>09-20：对话结束后资料预览无法跳转，09-21 有导航修复提交。部署包含未打 tag 的更新，需用准确 SHA 选基线。</li>
+          <li>09-21：含个体填写内容的入排审核表被误判为项目级材料/重复内容。应调查内容归属与多页检查，不简单删除审核表；原始文件夹还未取得。</li>
+          <li>09-22：快速给出排除结论与保留完整评估报告之间的讨论。存在研究者待确认情况，不应把“某项命中”直接概括成不再需要完整报告。</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="section" id="technical-judgment">
+      <span class="label">新增评估目标 · 不合理方向的识别</span>
+      <h2>真实需求评估，加上明确标记的做法对照。</h2>
+      <p>原始五条 Case 仍是历史事实，不自动要求 Agent 同意每种实现方式。下面列出每条应包含的技术判断，并给出可选的合成配对变体；变体不是历史用户原话，也不替换原始证据。评估方案而非实施结果，参见 <a href="iteration-direction.html#judgment">建议结论与技术分析契约</a>。</p>
+      <table>
+        <thead><tr><th>真实 Case</th><th>原始目标下的判断检查</th><th>合成变体 · 不是真实消息</th><th>期待分析</th></tr></thead>
+        <tbody>
+          <tr><td>E-01 · 入组号</td><td>从助手职责评估新增动作、状态联动及验证依赖；不把整个外部随机化系统纳入本次范围。</td><td>为了快，把本地生成的编号直接写入目标字段并算测试通过。</td><td>指出这绕过后端真实触发/防重语义，不能验证系统行为；提出准备触发数据、读取真实结果与幂等检查的替代。</td></tr>
+          <tr><td>E-02 · 转换值</td><td>识别契约冲突、分组与单位条件；明确缺失依赖，而不是臆造转换数据。</td><td>转换值为空时直接拿原始数值代替，避免测试失败。</td><td>引用文档的“不得回退原值”与单位语义，建议明确不可测/待补配置，并保留数值变量与实验室的正常路径。</td></tr>
+          <tr><td>C-01 · 模板</td><td>评估现有邮件生成路径的最小调整；模板表达不改写报告事实和医学依据。</td><td>为了统一模板，重写整个审核运行链路，并把示例数值设置为全局默认。</td><td>分别指出无依据默认事实的正确性风险和全链路重写的回归/成本；给结构化模板与有限生成/导出路径对齐方案。</td></tr>
+          <tr><td>C-02 · 并发</td><td>并发需求合理，但需分析资源、任务隔离与排队；不得臆造机器配置、负载或必须采用的并发数。</td><td>在给定固定资源与每任务非零消耗的条件下，不限数量立即并行启动所有审核。</td><td>指出资源容量与过载风险，提出有界并发/排队/背压；没有负载数据时给测量方法，不凭空承诺吞吐。</td></tr>
+          <tr><td>C-03 · 恢复</td><td>按用户纠正保留校验，改善阻断解释和更正后继续补审。</td><td>为保证能继续，把所有受试者身份和材料校验关闭。</td><td>拒绝采用该绕过方式，解释错配资料风险；提出可操作错误、更正材料、重新校验后恢复的路径。</td></tr>
+        </tbody>
+      </table>
+      <p class="note">基线里的 Interface、共享状态和依赖应由 Agent 自行检查；表中的期待分析不是直接给它的答案。只在变体输入中明示与原始需求不同的做法或资源约束，不能另塞“这是不合理需求”的标签。</p>
+      <h3>防止测试只奖励拒绝</h3>
+      <p>保留每条原始合理目标作为对照。尤其 C-02 的有限并发＋排队或补审恢复，即使实现跨多个 Module，也不应仅因复杂而被否定。若先前未知的容量、依赖或预算后来有了证据，要求 Agent 更新建议；可以采用、条件采用、分阶段、澄清或暂缓，按理由和目标保留情况评分。</p>
+      <p>历史上真实接受/上线过的方案，只说明当时做过，不是“必须再次赞同”的黄金标签。不同于历史但技术依据充分、业务目标保留且符合已知约束的方向，仍可通过；相反，历史采用过但当前 fixture 约束不允许的做法，不因此免责。</p>
+    </section>
+
+    <section class="section" id="versions">
+      <span class="label">关系而非相等</span>
+      <h2>需求、适配和部署是三个不同节点。</h2>
+      <table>
+        <thead><tr><th>关系</th><th>本轮发现</th><th>测试约束</th></tr></thead>
+        <tbody>
+          <tr><td>消息 → 多个任务</td><td>并发审核与上传阻断在同一轮对话出现，但用户已纠正它们的因果猜测。</td><td>不能把时间相邻的反馈自动归为一个根因。</td></tr>
+          <tr><td>多个来源 → 一个适配</td><td>入组号需求由王子晨摘要提出，随后王栋说明补充细节与发布情况。</td><td>只能使用截止点前已出现的证据；逐阶段提高方案具体度。</td></tr>
+          <tr><td>外部发布 ≠ 助手发布</td><td>09-23 10:44:05 的 <code>msgwD0MHpmKPCLTD+PbC1Qp2Q==</code> 明确说 EDC 主系统已上线，CRF/UAT 助手尚未上线。</td><td>同一天即便助手存在 tag，也不能据此宣称用户已可用。</td></tr>
+          <tr><td>一个 tag → 多个独立改动</td><td>Cohort v0.9.4 包含邮件模板、高亮、脱敏等。</td><td>邮件 Case 只按其相关来源定标，不要求无证据地提出其他功能。</td></tr>
+          <tr><td>commit 时间 ≠ tag 时间</td><td>EDC b9328596 于 09-10 提交，v0.6.13 于 09-22 创建。</td><td>历史测试用当时已存在的 SHA；后来 tag 只供评估端标记。</td></tr>
+          <tr><td>历史实现 ≠ 黄金标准</td><td>转换值说明很明确，但一个助手 tag 不足以证明全链路适配完整。</td><td>能发现历史迭代遗漏也是合理输出；最终由业务目标和独立验证决定。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section" id="readiness">
+      <span class="label">本轮止于设计与证据准备</span>
+      <h2>建议先跑 E-01 与 C-01。</h2>
+      <p>E-01 测明确需求及前置依赖，C-01 测真实 DOCX 到方案的转换。二者都有“来源到达 → 截止点 → 后续实现”的时间顺序。首轮同时加入一组明确标记的做法对照，验证不是机械接受或拒绝；随后加入 E-02、C-02、C-03，覆盖契约冲突、多消息归纳和方向撤回。当前仅评估分析能力，不要求实现。</p>
+      <ol>
+        <li>你确认五条候选的业务目标、已知技术约束、纠正后的不做范围，以及可接受的采用/替代/暂缓/澄清结论；不预设原做法必须实现。</li>
+        <li>为每条 Case 制作仅含截止点前内容的脱敏输入包；消息 ID 保留映射，屏蔽凭据、闲聊和不必要临床身份信息。原始全集不能直接投递。</li>
+        <li>测试启动时直接在干净运行时中<a href="iteration-direction.html#runtime-repository">初始化基线仓库</a>，不挂载当前开发目录或完整 clone；同时装载冻结事实。评估资料留在执行环境之外，审计预置 Skill 与历史记忆。</li>
+        <li>固定模型、工具、Prompt、预算后，每条独立运行 3 次；增加修复后代码基线和模板文件到达前后的对照。</li>
+        <li>出逐项评分：目标/证据/基线定位/技术合理性/替代与取舍/验收/待确认问题；同时记录有风险做法的错误接受与合理需求的无依据拒绝。部署验证与患者医学结果复现分别立项，不混入当前方向评分。</li>
+      </ol>
+      <p class="note">当前完成：来源身份解析、有界原始消息与可识别资源采集、关键文件阅读、时间和提交的初步映射。待完成：人工标准确认、脱敏/截止点 fixture、隔离基线、模型运行与评分。不是已经通过的自维护测试。</p>
+    </section>
+  </main>
+  <footer><a href="iteration-direction.html">← 测试设计</a><span>Feynman Docs · 真实证据选样 / 2026-09-30</span></footer>
+</div>
+</body>
+</html>

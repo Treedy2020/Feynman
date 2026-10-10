@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Feynman 单 Agent MVP 设计：用户管理 Agent、统一收件箱、Schedule 独立收集窗口、历史补查与可靠投递。">
+  <title>Agent 与 Schedule · Feynman Docs</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+  <style>
+    .flow-frame { border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; margin: 20px 0 12px; background: var(--bg); }
+    .flow-svg { display: block; width: 100%; min-width: 760px; height: auto; }
+    .flow-svg .lane { fill: var(--subtle); stroke: var(--line); }
+    .flow-svg .node rect { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; rx: 9; }
+    .flow-svg .node:hover rect, .flow-svg .node:focus rect { stroke: var(--accent); fill: var(--accent-bg); }
+    .flow-svg .node:focus { outline: none; }
+    .flow-svg .node text { fill: var(--text); font: 600 15px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .flow-svg .node .sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
+    .flow-svg .edge { fill: none; stroke: var(--muted); stroke-width: 1.5; marker-end: url(#flow-arrow); }
+    .flow-svg .edge.optional { stroke-dasharray: 5 5; }
+    .flow-svg .caption { fill: var(--muted); font: 12px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .flow-svg .arrow-head { fill: var(--muted); }
+    .flow-caption { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body data-doc="agent-schedules" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero">
+      <span class="doc-status">Rust 初版已实现 · 2026-10-08</span>
+      <h1>一个 Agent，一条可恢复的消息通路。</h1>
+      <p class="lead">当前演进目标是每个 Project 最多一个长期 Agent；用户通过 CLI 管理它的生命周期与权限。用户消息、Schedule 和外部事实源通知进入同一个持久收件箱。每个 Schedule 自己开窗、封窗并投递给一个固定 Agent，断线后可补查历史。</p>
+      <p class="note">已实现用户管理的 Agent、独立事实源历史、Schedule 固定开窗、持久 Inbox 与原生 steer。每项目最多一个未归档 Agent、一个活跃 Run。新消息推荐使用 <code>inbox send</code>；旧 <code>send</code> / <code>/messages</code> 仍是立即启动的兼容入口，不提供 Inbox 排队。2026-10-09 新增 <a href="environment-leases-memory.html">环境、租约与记忆</a>；多 Agent、一对多投递仍是后续。本轮没有发起真实认证、模型分析或部署。</p>
+    </section>
+
+    <nav class="doc-outline" aria-label="本页目录">
+      <a href="#model">领域关系</a><a href="#schedule">触发与补查</a><a href="#delivery">投递状态机</a><a href="#agents">Agent 生命周期</a><a href="#access">授权</a><a href="#cli">CLI 契约</a><a href="#migration">实施边界</a>
+    </nav>
+
+    <section class="section" id="model">
+      <span class="label">单 Agent MVP 模型</span>
+      <h2>一个项目最多一个 Agent，所有输入汇入同一个收件箱。</h2>
+      <div class="flow-frame">
+        <svg class="flow-svg" viewBox="0 0 1040 540" role="img" aria-labelledby="flow-title flow-description">
+          <title id="flow-title">Project、Schedule、统一收件箱与长期 Agent</title>
+          <desc id="flow-description">用户消息和 Schedule 通知写入持久收件箱，向项目唯一 Agent 投递；Agent 拥有长期会话，使用 Project Workspace。各节点可点击查看下文说明。</desc>
+          <defs><marker id="flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path class="arrow-head" d="M0 0 L8 4 L0 8 Z"/></marker></defs>
+          <rect class="lane" x="20" y="22" width="1000" height="206" rx="12"/>
+          <rect class="lane" x="20" y="240" width="1000" height="281" rx="12"/>
+          <text class="caption" x="38" y="44">项目身份与长期 Agent 会话</text>
+          <text class="caption" x="38" y="263">事实变化、收件箱与执行环境</text>
+          <path class="edge optional" d="M246 112 H297"/>
+          <path class="edge optional" d="M512 112 H763"/>
+          <path class="edge" d="M150 154 V295 H340 V337"/>
+          <path class="edge" d="M209 376 H241"/>
+          <path class="edge" d="M440 376 H470"/>
+          <path class="edge" d="M668 376 H698"/>
+          <path class="edge" d="M882 362 H1014 V210 H1003"/>
+          <path class="edge" d="M883 170 V154"/>
+          <path class="edge" d="M763 120 H682 V474 H763"/>
+          <a class="node" href="#agents" aria-label="Project：Agent 与 Workspace 的归属" tabindex="0"><rect x="39" y="72" width="207" height="82"/><text x="57" y="105">Project</text><text class="sub" x="57" y="128">0..1 Agent · Workspace</text></a>
+          <a class="node" href="#agents" aria-label="可选默认 Agent：只负责缺省路由" tabindex="0"><rect x="297" y="72" width="215" height="82"/><text x="315" y="105">Default Agent?</text><text class="sub" x="315" y="128">可选路由，不是固定角色</text></a>
+          <a class="node" href="#agents" aria-label="项目 Agent：长期会话由用户管理" tabindex="0"><rect x="763" y="72" width="240" height="82"/><text x="781" y="105">Project Agent</text><text class="sub" x="781" y="128">Session · Conversation</text></a>
+          <a class="node" href="#delivery" aria-label="持久收件箱：所有输入统一排队" tabindex="0"><rect x="763" y="170" width="240" height="82"/><text x="781" y="203">持久收件箱</text><text class="sub" x="781" y="226">用户 / Schedule / 外部通知</text></a>
+          <a class="node" href="#schedule" aria-label="时钟或事实源：定时与事件输入" tabindex="0"><rect x="39" y="337" width="170" height="82"/><text x="57" y="370">时钟 / 事实源</text><text class="sub" x="57" y="393">周期、DWS 事件等</text></a>
+          <a class="node" href="#schedule" aria-label="Schedule：可配置触发与收集窗口" tabindex="0"><rect x="241" y="337" width="199" height="82"/><text x="259" y="370">Schedule</text><text class="sub" x="259" y="393">触发 + 收集窗口</text></a>
+          <a class="node" href="#delivery" aria-label="Occurrence：一次触发只记一份事件范围" tabindex="0"><rect x="470" y="337" width="198" height="82"/><text x="488" y="370">Occurrence</text><text class="sub" x="488" y="393">一次触发 / 一份事实范围</text></a>
+          <a class="node" href="#delivery" aria-label="Delivery：本阶段一对一投递" tabindex="0"><rect x="698" y="337" width="184" height="82"/><text x="716" y="370">Delivery × 1</text><text class="sub" x="716" y="393">一条 Agent 消息</text></a>
+          <a class="node" href="#agents" aria-label="Project Workspace：项目持久文件系统与执行环境" tabindex="0"><rect x="763" y="450" width="240" height="57"/><text x="781" y="483">Project Workspace</text></a>
+        </svg>
+      </div>
+      <p class="flow-caption">点击节点跳转到相应契约。虚线表示可选默认路由；实线表示归属、触发或投递。当前图只展示单 Agent；多 Agent 扩展见下文。</p>
+      <div class="table-wrap"><table><thead><tr><th>对象</th><th>归属与关系</th><th>不意味着</th></tr></thead><tbody>
+        <tr><td>Project Agent</td><td>本阶段项目内 0..1 个长期身份；拥有独立 Session / Conversation。</td><td>必须存在一个特权 Main Agent。</td></tr>
+        <tr><td>Default Agent</td><td>Project 可选的缺省消息路由目标。</td><td>所有 Schedule 的动态目标或额外权限。</td></tr>
+        <tr><td>Project Workspace</td><td>Project 拥有的持久文件系统及执行环境；不属于 Agent 会话。</td><td>共享模型上下文、会话身份或凭证。</td></tr>
+        <tr><td>Project Schedule</td><td>一个持久触发规则，创建时解析并固定一个目标 Agent ID。</td><td>每次触发必定产生独立 Agent Run。</td></tr>
+        <tr><td>Occurrence / Delivery</td><td>一个收集窗口形成一个 Occurrence，关联一条目标 Agent 的 Delivery。</td><td>与用户消息使用不同的投递系统。</td></tr>
+        <tr><td>Agent Inbox Message</td><td>用户、Schedule 或外部通知的持久输入；每条有稳定消息 ID 和来源。</td><td>已经被模型读到或任务已经完成。</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section class="section" id="schedule">
+      <span class="label">Schedule 模块</span>
+      <h2>每个 Schedule 独立开窗，也能补查监听空窗。</h2>
+      <p>时间型 Schedule 在指定时刻或间隔形成 Occurrence，例如每小时检查一次项目日志、每半天调查一次 bad cases。事件型 Schedule 由已获权的事实源变化触发，例如某人的 DWS 消息。它们共享投递机制；时间型可让 Agent 在收到消息后主动调用外部工具，事件型先由 Feynman 收集事件，再通知 Agent。</p>
+      <p>事件型的 <code>collect_for_seconds</code> 属于<strong>整个 Schedule</strong>，而不是每个人、群或匹配条件各开一个窗口。调度器首次看到符合规则的新记录时开窗，结束时间固定，不因后续事件延长。举例：10:00 首条消息开启 30 分钟窗口；10:05 和 10:28 的不同发件人消息都进入此窗；10:30 封窗形成一次 Occurrence；10:31 的事件进入下一窗口。持续聊天不会让唤醒无限推迟。仅消费 Schedule 创建后入库的新记录，已有历史可由 Agent 主动查询。</p>
+      <p>同一来源事件用稳定事件／消息 ID 去重；窗口、事件范围和已完成补查水位持久化。频繁变化时每个 Schedule 至多保留一个尚未开始投递的聚合通知，后续封窗的 Occurrence 关联到这条收件箱消息，并入待投递事实范围；每个 Occurrence 仍有独立 Delivery 供审计，但这批 Delivery 可由一次运行时接收确认共同完成。一旦开始投递就冻结消息快照，新事件进入下一条待投递通知。默认只通知「来源发生变化」、时间范围、数量与来源 ID；Agent 经授权按需读取正文。外部正文始终是未可信输入。</p>
+      <p>DWS 实时消息由本地 Feynman Server 托管长连接，精确绑定授权账号、群／人和规则，不能寄生在一次 Agent Run 中。Server 休眠或监听掉线时标记 <code>gap</code>；恢复后按用户允许的历史范围、源身份及时间区间发起补查，与实时流通过稳定消息 ID 去重。历史查询必须显式给出起止时间（半开区间 <code>[start,end)</code>）、翻完分页，并核对结果的完成／部分失败标记；只在完整补查后推进水位。无法覆盖的历史区间保持 <code>partial</code> 或 <code>unknown</code>，向 CLI 显示，不宣称零遗漏。已封窗的 Occurrence 不原地改写；迟到的历史事实形成带原始时间范围和补查来源的新 Occurrence。</p>
+      <p class="note">当前区分 <code>manual</code>、<code>dws_messages</code>（有界历史采集）与 <code>dws_events</code>（真实长连接）。历史采集每次最多 24 小时，自动 poll 按最多一小时的段推进，仅完整结果推进游标；显式 backfill 保存范围留证，不自动改变连续游标。实时监听只接受稳定群 ID 或 open_dingtalk_id、精确 profile 和 message 事件，必须收到 ready，单次最多十分钟、最多十六个消费者，退出使用 SIGTERM。监听失败不盲重试；非正常重启标为 interrupted，可能尚存的消费者在 listener_until 到期后才允许所有者 resume。实时空窗的自动历史补查尚未实现，需显式 backfill；不能宣称零遗漏。gcloud 仍只是未来示例。</p>
+      <div class="table-wrap"><table><thead><tr><th>持久分区</th><th>已实现规则</th></tr></thead><tbody>
+        <tr><td>Source 注册实例</td><td>每次 create 生成新 Source ID；同名、同账号、不同时间登记也不复用历史。固定 Project / Agent / Connection / 资源时间范围，扩大范围需新建。</td></tr>
+        <tr><td>Observation 历史</td><td>独立 source_id + event_id 去重，保留 occurred_at / observed_at / sequence / 正文。重复 ID 保留首个快照；不做撤回、编辑的版本推断。</td></tr>
+        <tr><td>Capture 留证</td><td>分页查询 poll / backfill 的起止范围、完成标记与监听停止；last_capture_complete 只表示最近一次范围，不表示全历史无缺口。</td></tr>
+        <tr><td>本地可发现</td><td>所有者 CLI <code>sources list / read / captures / watch</code> 和 <code>feed read / watch</code>；Agent MCP <code>feynman_observations</code> 的 sources / query / captures / feed，仅查询其固定 Agent 的本地历史，不提供管理或取密钥操作。<a href="observation-feed.html">单渠道窗口与项目统一 Feed</a>共享持久历史，但查看位置与本 Schedule 的水位独立。</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section class="section" id="delivery">
+      <span class="label">投递模块</span>
+      <h2>先持久化，再投递；确认接收不等于工作完成。</h2>
+      <p><code>inbox send</code> 的用户输入与 Schedule Occurrence 先成为 <code>Agent Inbox Message</code>，绑定固定 Agent ID 与稳定消息 ID。Occurrence 对同一 schedule + opened_at 唯一，并关联目标 Agent / Inbox；当前不另建重复的 Delivery 表，投递状态通过 Inbox 关联。多个未派发 Occurrence 共用一条聚合通知，包含全部窗口与事实 sequence 范围；开始派发后冻结，新事实进入下一条通知。旧的立即发送入口仍保留兼容行为。</p>
+      <p>投递消息是向目标 Agent 的长期会话<strong>追加</strong>一条新输入，不修改已有的「最后一条消息」。目标空闲时启动新 turn；运行中按该 Schedule 的投递策略排队或尝试 steer 当前 turn。例行巡检默认 <code>queue</code>；确需改变当前工作方向的通知才选 <code>steer_if_active</code>。根据 <a href="https://learn.chatgpt.com/docs/app-server">Codex App Server 官方文档</a>，<code>turn/steer</code> 要求当前 thread 与 <code>expectedTurnId</code> 匹配，向活跃 turn 追加输入，不产生新的 <code>turn/started</code>；它属于现有 Run，不凭空新建 Run。若因 turn 恰好完成而拒绝 steer，该投递回到队列，由下一 turn 消费；已经确认接收的输入不重发。</p>
+      <div class="table-wrap"><table><thead><tr><th>状态</th><th>含义</th><th>下一步</th></tr></thead><tbody>
+        <tr><td><code>pending</code></td><td>收件箱已落盘，尚未调用运行时；也可因明确拒绝而等待退避重试。</td><td>Agent 可用且轮到此消息时进入 <code>dispatching</code>。</td></tr>
+        <tr><td><code>dispatching</code></td><td>数据库唯一约束保证同 Agent 一个派发者，已记录 Inbox ID，正在调用 <code>turn/start</code> 或 <code>turn/steer</code>。</td><td>收到明确确认进 <code>accepted</code>；明确未接收回 <code>pending</code>；超时或进程崩溃进 <code>unknown</code>。</td></tr>
+        <tr><td><code>accepted</code></td><td>运行时确认接收，关联记录 native thread / turn 的 Run ID；这是投递终态，不代表模型已处理或任务成功。</td><td>Run 的完成／失败在独立执行记录中跟踪，不重发此消息。</td></tr>
+        <tr><td><code>unknown</code></td><td>请求可能已被接收，但响应丢失；不能安全自动重发。</td><td>先用消息 ID 与原生会话历史对账；证实已收则 <code>accepted</code>，证实未收才回 <code>pending</code>，无法判定则保留并提示用户。</td></tr>
+        <tr><td><code>cancelled</code></td><td>用户明确取消未接收的消息，或归档目标 Agent；停用 Agent / Schedule 只暂停 pending，不删除。</td><td>终态；已 <code>accepted</code> 的输入不可通过取消撤回。</td></tr>
+      </tbody></table></div>
+      <p>状态变化落盘，审计仅保存身份、动作、对象 ID 与时间。进程重启将未确认的 dispatching 转 unknown，不自动重放；当前由所有者查看 Run / 原生历史后通过 CLI reconcile，尚无自动对账器。unknown 阻塞同 Agent 后续投递。waiting_approval 时排队；只有确认活跃 turn 才尝试 steer，明确拒绝回 pending。accepted 不重发，不承诺端到端 exactly-once。</p>
+    </section>
+
+    <section class="section" id="agents">
+      <span class="label">Agent 注册模块</span>
+      <h2>Agent 的生灭和权限属于用户，不属于 Agent 自己。</h2>
+      <p>使用 <code>projects create --without-agent</code> 可先准备项目与 Workspace；最多一个未归档 Agent。用户可 CRUD、启停、授予／撤销能力，用完整 update JSON 改默认路由。未指定 --agent 时必须有默认 Agent；Schedule 创建时固定 Agent ID，变更默认值或创建替代身份不会改派旧 Schedule。创建时登记稳定身份，首次运行时才准备 Session / Conversation / 原生 thread。</p>
+      <p>生命周期为 <code>active → disabled → archived</code>，disabled 可恢复。停用或收紧权限立即阻止新调用与监听／投递，不强杀已经运行的模型或应用进程。delete 归档，保留历史并取消 pending；必须先结束活跃 Run、处理 unknown / dispatching。归档后不可复活，替代 Agent 使用新 ID、新 Session / Conversation，不继承旧来源或能力。迁移保留旧会话，并在迁移时固定旧 Schedule 目标。MCP 不提供所有者管理操作；同一 OS 用户仍不构成强安全隔离。</p>
+      <p>多 Agent 属于未来扩展：Project 可容纳多个长期 Agent、各有 Session / Conversation，共用项目 Workspace；届时需解决并发写入（独立 Git worktree 或写入租约）和隔离级别。Reviewer、Agent 间消息、跨 Agent 改派与一对多 Schedule 均仅预留模型，不进入单 Agent MVP。</p>
+    </section>
+
+    <section class="section" id="access">
+      <span class="label">External Access 与安全</span>
+      <h2>权限由用户授予、撤销，并在每次调用时复核。</h2>
+      <p>认证 Connection、Project Binding 和业务 Tool Grant 继续分开。用户通过 CLI 管理 Agent 的可用能力与审批策略；运行时校验至少包含 <code>tenant + project + agent + action + resource</code>，不能因为项目只有一个 Agent 就跳过 Agent 身份。Agent 可发起权限申请，但不能自行批准、扩大或恢复被撤销的授权。Schedule 的创建／启用、监听范围和历史补查范围同样需要用户控制。DWS 消息、日志等外部事实不能授予新权限或作为系统级指令。</p>
+      <p>已实现 Project Tool Grant 与 Agent capability allowlist 的交集，再复核 Connection、Binding 到期和 DWS 精确资源／时间 Scope。兼容创建的默认 Main Agent 与迁移身份以 capabilities=null 沿用项目 Grant；首次所有者修改会冻结为显式列表。<code>agents create</code> 的新身份 capabilities=[]，需明确授予能力，仍不能替代项目 Grant。当前外部工具保持只读，没有对外发消息或部署接口。</p>
+      <p>已实现的事实流见 <a href="external-access-abstraction.html#subscriptions">ObservationSource / Subscription</a>：采集、补查、入箱、投递与 DWS 历史查询各自复核权限；撤权后保留记录但暂停后续使用。<a href="external-access-abstraction.html#memory">Project Memory</a> 已追加证据关联的结构化判断与待办；任务执行仍走现有队列，物理保留清理待实现。</p>
+    </section>
+
+    <section class="section" id="cli">
+      <span class="label">已实现 CLI / MCP</span>
+      <h2>用户用 CLI 管理 Agent、权限和投递。</h2>
+      <pre><code>feynman projects create --name "新项目" --without-agent
+feynman agents create PROJECT_ID --name main --default
+feynman agents list PROJECT_ID
+feynman agents show PROJECT_ID AGENT_ID
+feynman agents update PROJECT_ID AGENT_ID --input agent.json
+feynman agents disable PROJECT_ID AGENT_ID
+feynman agents enable PROJECT_ID AGENT_ID
+feynman agents delete PROJECT_ID AGENT_ID  # 归档；保留历史，先处理未确认投递
+feynman agents grant PROJECT_ID AGENT_ID dws.chat.messages.read
+feynman agents revoke PROJECT_ID AGENT_ID dws.chat.messages.read
+# 上述 Agent 权限不能代替外部认证、绑定、项目业务许可：
+feynman external-tools grant PROJECT_ID dws.chat.messages.read
+
+feynman inbox send PROJECT_ID --agent AGENT_ID --message "检查项目状态"
+feynman inbox list PROJECT_ID
+feynman inbox resolve PROJECT_ID INBOX_ID --state cancelled
+# unknown：检查原生历史后才允许明确重试，或 accepted --run-id RUN_ID
+feynman inbox resolve PROJECT_ID INBOX_ID --state pending
+
+feynman sources create PROJECT_ID --input source.json
+feynman sources list PROJECT_ID
+feynman sources read PROJECT_ID SOURCE_ID --after 0 --limit 100
+feynman sources captures PROJECT_ID SOURCE_ID --after 0 --limit 100
+feynman sources pause PROJECT_ID SOURCE_ID
+feynman sources resume PROJECT_ID SOURCE_ID
+feynman sources backfill PROJECT_ID SOURCE_ID --start START --end END
+
+feynman schedules create PROJECT_ID --title "巡检" --every-seconds 3600 \
+  --agent AGENT_ID --delivery queue \
+  --prompt "查看授权项目的日志，并报告异常"
+
+feynman schedules create PROJECT_ID --title "消息变化" \
+  --source SOURCE_ID --source OTHER_SOURCE_ID --collect-for-seconds 1800 \
+  --agent AGENT_ID --delivery steer_if_active \
+  --prompt "指定的外部事实源在本窗口内发生变化，请检查并判断是否需要跟进"
+
+feynman schedules resume PROJECT_ID SCHEDULE_ID # 创建默认暂停
+feynman schedules deliveries PROJECT_ID SCHEDULE_ID
+feynman schedules pause PROJECT_ID SCHEDULE_ID</code></pre>
+      <details><summary>配置文件示例 · 不含秘密</summary><pre><code>// agent.json：完整替换，遗漏 capabilities 会清空；不继承旧身份
+{"name":"main","state":"active","is_default":true,"capabilities":["dws.chat.messages.read"]}
+
+// source.json：manual 可直接导入证据；DWS 需先完成认证 / Binding / Scope / Grant
+{"name":"EDC 历史批次 1","kind":"manual","enabled":true}
+
+// DWS 实时来源：需额外 dws.event.messages.listen 的项目与 Agent 授权
+{"name":"指定群订阅","kind":"dws_events","agent_id":"AGENT_ID",
+ "connection_id":"CONNECTION_ID","enabled":false,
+ "arguments":{"target_kind":"group","target_id":"STABLE_CID",
+              "start":"2026-10-08T00:00:00+08:00","end":"2026-10-09T00:00:00+08:00"}}
+
+// Agent 调用 feynman_observations MCP；记录由本机 Server 保存，不复制凭证进容器
+{"operation":"sources"}
+{"operation":"query","source_id":"SOURCE_ID","after":0,"limit":100}
+{"operation":"captures","source_id":"SOURCE_ID","after":0,"limit":100}</code></pre></details>
+      <p>deliveries 展示当前窗口、Occurrence 和 Inbox 投递；sources 展示游标、最近范围覆盖与监听状态。历史位于本机私有 SQLite，原生会话 JSONL 位于专用 Codex Home，二者不依赖容器存活。Session Heartbeat 仅指运行时存活，不是主动消息。暂停 Schedule 不撤回 accepted 输入，也不停止已经开始的 Run。</p>
+    </section>
+
+    <section class="section" id="migration">
+      <span class="label">初版实现与剩余边界</span>
+      <h2>单 Agent 的闭环已落地，生产安全能力分阶段实现。</h2>
+      <ol>
+        <li>已实现：旧身份／Session／Conversation 迁移、Agent CRUD 与权限交集、无 Agent 项目、来源实例持久分区与 Agent 只读查询。</li>
+        <li>已实现：单 Agent 固定目标、整个 Schedule 固定开窗、待投递聚合、事务化 Occurrence / Inbox、queue / steer、重启 unknown 与所有者对账。</li>
+        <li>已实现：DWS 稳定目标真实监听、授权和范围检查、SIGTERM 清理、有界历史采集与补查、部分结果留证及不推进游标。离线公开接口测试见 <a href="../../scripts/smoke/test_automation.py">集成测试</a>；迁移／隔离／恢复测试见 <a href="../../crates/feynman-server/src/store/automation_tests.rs">Rust 测试</a>。</li>
+        <li>已追加：通用 MemoryStore、环境 Profile 与指定进程装载、凭证版本和使用租约，见 <a href="environment-leases-memory.html">当前实现契约</a>。未实现：实时空窗自动补查、自动原生历史对账、物理保留清理、多 Agent / 广播、Provider 真正短期签发与远程多用户认证。强租户隔离不在当前个人版范围，不对外托管不可信租户。</li>
+      </ol>
+      <p class="note">模块边界：Schedule 负责「何时产生 Occurrence、事实窗口是否完整」，收件箱／投递负责「何时交给 Agent 以及如何恢复」，Agent 注册负责身份与生命周期，External Access 负责有效授权。Codex App Server 只是运行时适配，不把原生 turn ID 当作 Feynman 长期身份。这些对象在 <a href="visual-console.html">可视化工作台</a>中通过同一 Rust Server 查询和操作。</p>
+    </section>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Agent &amp; Schedule · Rust 初版 / 2026-10-08</span></footer>
+</div>
+</body>
+</html>

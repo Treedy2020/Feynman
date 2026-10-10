@@ -9,6 +9,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 feynman-core = { path = "../feynman-core" }
+feynman-local = { path = "../feynman-local" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

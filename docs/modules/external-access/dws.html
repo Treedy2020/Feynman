@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="DWS CLI 子模块：设备登录的中文操作流程、项目绑定、企业搜索、HTTP 与 MCP 契约、恢复及验收。">
+  <title>Feynman Docs · DWS CLI</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="../../assets/site.css"><script src="../../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="dws-module" data-docs-root="../.."><div class="page"><header class="topbar"></header><main id="content">
+  <section class="hero"><span class="doc-status">首批 CLI · Rust V1 已实现</span><h1>DWS：设备登录与项目事实源。</h1><p class="lead">Device 是设备登录：Server 上的 dws 发起认证，用户打开钉钉验证页面确认，CLI 等待结果。Feynman 托管等待过程和私有缓存，再验证账号；不让 Agent 接收 Token，也不把登录等同于搜索获权。</p></section>
+  <nav class="toc" aria-label="本页目录"><a href="#authentication">设备登录</a><a href="#cli">CLI 操作</a><a href="#states">状态与排查</a><a href="#interfaces">MCP / HTTP</a><a href="#execution">搜索与存储</a><a href="#recovery">取消与恢复</a><a href="#verification">验证记录</a></nav>
+  <section class="section" id="authentication"><span class="label">DWS 专属实现</span><h2>用户在浏览器确认，Server 在后台等待。</h2>
+    <div class="steps"><article class="step"><strong>允许发起认证</strong><p>所有者授予项目 <code>dws.auth.device</code>。Agent 只能提交理由，不能选择账号密钥、登录地址或任意参数。</p></article><article class="step"><strong>启动原生 CLI</strong><p>Server 创建独立认证目录，运行固定设备登录命令。HTTP 立即返回申请，不阻塞等用户。</p></article><article class="step"><strong>用户确认</strong><p>展示真实验证链接、用户码和截止时间。用户在钉钉页面登录并确认授权；Agent 不代替同意。</p></article><article class="step"><strong>验证实际身份</strong><p>dws 完成并保存缓存后，Server 重新检查有效性与企业 / 用户身份，成功才标记 <code>authorized</code>。</p></article></div>
+    <pre><code># Server 内部固定执行，不是交给 Agent 的任意命令入口
+dws auth login --device --no-browser --format json
+# 完成后重新检查；后续检查显式使用已记录的账号 profile
+dws auth status --format json</code></pre>
+    <p>设备协议的轮询由 dws 负责，Feynman 不重写 OAuth 客户端。CLI、项目 MCP 或未来前端读取的是 Feynman 公开进度。关闭 MCP 或结束 Agent Turn，不会销毁 Server 托管的任务。</p>
+    <p class="note">通用概念、设备协议、公开字段与敏感字段、项目授权和凭证边界已抽到 <a href="../../reference/external-authentication-flow.html">公共认证与授权流程</a>。本页只规定 DWS 的命令、状态和限制。</p>
+  </section>
+  <section class="section" id="cli"><span class="label">所有者与 Agent 的操作入口</span><h2>先登录，再登记、绑定和批准搜索。</h2>
+    <pre><code># 1. 所有者允许项目发起 device 登录
+feynman external-tools grant PROJECT_ID dws.auth.device
+# 2. 请求返回 AUTHORIZATION_ID；打开显示的链接完成钉钉确认
+feynman dws-auth request PROJECT_ID --reason "读取项目事实" --wait
+# --wait 只观察进度，不替用户确认；另一个终端可继续查询
+feynman dws-auth list PROJECT_ID
+feynman dws-auth status PROJECT_ID AUTHORIZATION_ID --wait
+feynman dws-auth check PROJECT_ID AUTHORIZATION_ID
+# 3. 确认为 authorized 后，登记经过验证的账号
+feynman access connections register-dws PROJECT_ID AUTHORIZATION_ID
+# 4. 所有者绑定该项目，再单独批准业务读取
+feynman access bind PROJECT_ID --provider dws --connection CONNECTION_ID
+feynman external-tools grant PROJECT_ID dws.aisearch.enterprise
+feynman external-tools invoke PROJECT_ID dws.aisearch.enterprise \
+  --arguments '{"queries":"项目事实","types":["document"]}'</code></pre>
+    <p>登记时再次验证账号，Connection 身份为 <code>corp_id:user_id</code>。绑定默认有效 24 小时；同一账号给第二个项目使用，仍需分别绑定和授权。原有主机默认 profile 不会自动迁移或作为搜索回退。</p>
+    <pre><code># 分别处理未完成的登录、业务 Grant、项目绑定或整个账号
+feynman dws-auth cancel PROJECT_ID AUTHORIZATION_ID
+feynman external-tools revoke PROJECT_ID dws.aisearch.enterprise
+feynman access unbind PROJECT_ID --provider dws
+feynman access connections disable CONNECTION_ID</code></pre>
+    <p class="section-copy">取消登录不吊销已发出的 Token；解绑不删除账号。公共参考中的 <a href="../../reference/external-authentication-flow.html#revocation">撤销边界</a> 解释这些动作的差别。</p>
+  </section>
+  <section class="section" id="states"><span class="label">DWS 认证状态 · 不是通用 Grant 状态</span><h2>拿到链接，不代表已经登录。</h2>
+    <div class="table-wrap"><table><thead><tr><th>API 状态</th><th>中文含义</th><th>用户 / 客户端下一步</th></tr></thead><tbody>
+      <tr><td><code>preparing</code></td><td>正在启动认证进程。</td><td>继续观察公开进度。</td></tr>
+      <tr><td><code>waiting_for_user</code></td><td>等待用户在钉钉确认。</td><td>打开验证链接，核对用户码和实际权限后同意或拒绝。</td></tr>
+      <tr><td><code>authorized</code></td><td>已完成登录并验证身份。</td><td>所有者可登记 Connection；尚未自动获得搜索权。</td></tr>
+      <tr><td><code>authentication_required</code></td><td>重新检查后发现未认证。</td><td>重新发起登录并显式登记 / 绑定，不回退其他账号。</td></tr>
+      <tr><td><code>expired</code></td><td>等待超过设备码期限。</td><td>需要时重新申请；旧链接不能当作仍有效。</td></tr>
+      <tr><td><code>denied</code></td><td>外部授权被拒绝。</td><td>停止等待，不绕过拒绝。</td></tr>
+      <tr><td><code>cancelled</code></td><td>用户取消或发起认证权限被撤销。</td><td>只表示本次流程结束，不证明 Token 已吊销。</td></tr>
+      <tr><td><code>failed</code></td><td>启动、输出、外部认证或身份校验失败。</td><td>查看公开错误码；不返回原始 CLI stderr。</td></tr>
+      <tr><td><code>interrupted</code></td><td>Server 重启前有未完成流程。</td><td>确认需要后重新申请；不会自动重建旧 OAuth 进程。</td></tr>
+    </tbody></table></div>
+    <p><code>status</code> / GET 查看已保存记录；<code>check</code> 执行新鲜检查，必要时由 dws 刷新认证。短暂检查异常返回错误，不伪造一次成功。身份与原记录不符时拒绝。<code>checked_at</code> 表示真实检查完成时间，不是 Session Heartbeat。</p>
+  </section>
+  <section class="section" id="interfaces"><span class="label">Provider 专属 MCP / HTTP</span><h2>展示链接和进度，不展示密钥。</h2>
+    <p>MCP <code>feynman_dws_authorization</code> 支持 <code>request / list / status / cancel / check</code>，需项目 <code>dws.auth.device</code> Grant；它不是只读工具，因为登录会改变账号状态。<code>request</code> 只接收短理由，后续操作使用授权 ID。项目与身份由 Server 上下文注入，不由模型指定。</p>
+    <p>它不同于通用 <code>feynman_access</code>：后者只查询 Provider / 项目状态、登记能力需求，不启动 DWS 登录，也不能批准、绑定或录入凭证。</p>
+    <p>原生 Codex 只对 Feynman 管理的这一个受限 MCP Server 配置 <code>default_tools_approval_mode=approve</code>，避免已由 owner 明确授予的项目工具被重复原生确认拒绝；每次真实调用仍由 Broker 检查 Grant、绑定和范围，未获权即拒绝。不是全局关闭 Shell 审批，也不替用户同意 DWS 浏览器认证。</p>
+    <div class="table-wrap"><table><thead><tr><th>HTTP</th><th>含义</th></tr></thead><tbody>
+      <tr><td><code>POST /v1/projects/{project}/dws-authorizations</code></td><td>输入 <code>{"reason":"读取项目事实"}</code>，返回 202 与公开记录。</td></tr>
+      <tr><td><code>GET /v1/projects/{project}/dws-authorizations</code></td><td>列出当前用户在该项目的申请。</td></tr>
+      <tr><td><code>GET /v1/projects/{project}/dws-authorizations/{id}</code></td><td>读取进度与公开验证信息；不触发新登录。</td></tr>
+      <tr><td><code>DELETE /v1/projects/{project}/dws-authorizations/{id}</code></td><td>取消未完成的流程。</td></tr>
+      <tr><td><code>POST /v1/projects/{project}/dws-authorizations/{id}/check</code></td><td>输入 <code>{}</code>，重新检查 / 按需刷新，不只是读历史状态。</td></tr>
+    </tbody></table></div>
+    <p>等待时可每秒读取 GET：展示 <code>verification_uri_complete</code>，无此字段则使用 <code>verification_uri</code>；同时显示 <code>user_code</code> 与 <code>expires_at</code>。只接受适配器验证过的 HTTPS 钉钉域名。完成或中止后清除挑战字段；不要依赖旧链接。</p>
+    <p class="section-copy">响应设置 <code>Cache-Control: no-store</code> 与 <code>Referrer-Policy: no-referrer</code>。<code>device_code</code>、OAuth 授权码、Token 和私有路径不是公开字段。申请响应明确报告 <code>credential_location: local-control-plane</code>、<code>sandbox_installed: false</code>。</p>
+  </section>
+  <section class="section" id="execution"><span class="label">搜索与私有缓存</span><h2>固定企业搜索，用明确的账号。</h2>
+    <p>业务读取执行固定 <code>dws aisearch enterprise</code>，只接受经过类型校验的关键词、内容类型和时间范围。Broker 核对项目 Grant、绑定有效期、Connection 停用与实际身份；读取前再次检查最新绑定。返回结果时递归移除常见认证字段，但不保证业务消息正文或附件没有敏感内容；应最小化来源范围，评估输入另做脱敏和凭据审计。</p>
+    <p>请求缓存位于 <code>~/.feynman/private/dws/&lt;authorization-id&gt;/</code>。每次请求独立设置 <code>DWS_CONFIG_DIR</code> 和 <code>DWS_KEYCHAIN_DIR</code>，使用 <code>DWS_DISABLE_KEYCHAIN=1</code> 的本地私有文件存储；清除继承的 DWS 配置与 app secret，仅保留运营者网络设置。目录 0700，不迁移个人 profile 或系统 Keychain。</p>
+    <p>Connection、绑定、申请与最小审计保存于 <code>private/external-access/</code>。凭证不进入项目卷或镜像；这不是加密 Vault、临时凭证租约或不可信多租户隔离。固定关键词与只读标记也不能保证限制到某个群或文档集合。</p>
+    <p class="note">当前企业搜索只发现内容，不自动读取命中资源或开放更多 dws 写操作。Server 不回退主机 profile；独立遗留适配器的兼容开关不是默认授权路径。</p>
+    <h3>指定消息源的独立只读能力</h3><p><code>dws.chat.messages.read</code> / MCP <code>dws_read_messages</code> 需要独立 Grant，以及 owner 配置的 <code>DwsScope</code>：目标类型 / 稳定 ID 列表、start、end。Agent 只能选择其中一个目标和范围内子窗口，不能自己扩大 Scope；命令固定为 <code>dws chat +chat-messages</code>，分页至明确上限，显式指定已验证 profile。结果的 complete / hasMore / failures 必须检查，不把截断结果说成完整历史。</p>
+    <pre><code>feynman access dws-scope PROJECT_ID --scope-json '{"targets":[{"kind":"group","id":"STABLE_GROUP_ID"}],"start":"2026-09-01T00:00:00+08:00","end":"2026-09-02T00:00:00+08:00"}'
+feynman external-tools grant PROJECT_ID dws.chat.messages.read</code></pre><p>Owner HTTP：<code>PUT /v1/projects/{project}/access/dws-scope</code>。这不会创建业务 Grant；其他工具如企业搜索不受此消息 Scope 限制。附件下载、发消息与原始 CLI 凭据装载均未开放。见 <a href="../../testing/mvp-validation-20260930.html">初版验证记录</a>。</p>
+  </section>
+  <section class="section" id="recovery"><span class="label">DWS 生命周期限制</span><h2>持久化进度，不假称恢复进程。</h2>
+    <ul><li>公开元数据存入 SQLite，按 Tenant / Project / 请求用户隔离；同项目有效等待请求去重，状态更新避免登录完成覆盖取消。</li><li>最多 16 个活动认证任务，等待上限 600 秒，并受实际设备码截止时间约束。运行中持续重查发起认证的 Grant。</li><li>认证检查与绑定搜索共享刷新锁，避免同一缓存并发刷新；目前 DWS 使用较保守的串行检查。</li><li>取消或正常关闭 Server 会中止托管任务，子进程采用 <code>kill_on_drop</code>。突然 OS 崩溃 / SIGKILL 不承诺即时杀死子进程，设备码期限仍限制等待。</li><li>重启把未完成请求置为 <code>interrupted</code> 并清除挑战。成功缓存与 Connection 可持久化，恢复后的业务调用仍需验证。</li></ul>
+    <p>dws 目前把人类可读设备提示写入 stderr、最终 JSON 写入 stdout。适配器固定提示语言、去除 ANSI，只提取验证链接、用户码和期限；输出有界，不记录原始文本。CLI 提示格式变化可能需要更新适配器，不声称这是稳定的结构化进度协议。</p>
+    <p>本实现没有永久刷新 daemon，也不因登录成功自动唤醒 Agent。授权缓存被另一项目显式复用后，各项目业务 Grant 独立；撤销原项目发起登录的权限，不连带撤销另一项目已批准的搜索。</p>
+  </section>
+  <section class="section" id="verification"><span class="label">验收与历史边界</span><h2>离线成功，不等于真实用户已同意。</h2>
+    <p>离线测试运行真实 Rust HTTP / MCP / CLI，仅替换外部 dws 进程。覆盖拒绝、链接展示、去重、身份验证、取消、过期、秘密脱敏、账号变化与重启；接入测试还覆盖认证缓存 → Connection → Binding → 企业搜索及共享账号的独立权限。</p>
+    <pre><code>cargo build --workspace
+python3 -m unittest discover -s scripts/smoke -p test_dws_authorization.py -v
+python3 -m unittest discover -s scripts/smoke -p test_external_access.py -v</code></pre>
+    <details><summary>真实 smoke 的运行方式与 2026-09-29 历史记录</summary><p>仅在用户明确希望测试真实登录时运行以下命令；需要本人完成浏览器确认。脚本使用隔离缓存，到期取消未完成请求并停止自身 Server，证据保留在输出的临时目录。</p><pre><code>python3 scripts/smoke/run_dws_device_smoke.py \
+  --dws /absolute/path/to/dws --wait-seconds 90</code></pre><p>2026-09-29 的真实 MCP → Rust Server → 已安装 dws 测试拿到了钉钉验证链接与用户码，状态达到 <code>waiting_for_user</code>。90 秒内未完成浏览器确认，最终取消并停止测试 Server；真实成功登录仍未验证。</p><p>历史公开证据目录：<code>/var/folders/tb/bxhyq9ld1gg6lpb97zk98m8c0000gn/T/feynman-dws-device-smoke-inkyewlh/</code>。这是当时的记录，不保证临时目录仍在。</p></details>
+    <p>2026-09-30 初版测试中，公司模型驱动的真实 Main Agent 从 Spark 执行环境调用 MCP，取得设备授权入口。600 秒内未完成本人浏览器同意，状态到期；未登记成功 Connection，也未验证真实受限消息读取或撤销后的拒绝。离线替身测试通过不能替代这三步真实证据。重试需新设备链接，不复用过期挑战，见 <a href="../../testing/mvp-validation-20260930.html">初版实现与验证</a>。</p>
+    <details><summary>2026-10-08 复核：用户网页确认与 Server 结果不一致</summary><p>Spark SSH 已恢复。真实 Main Agent 使用公司模型身份发起了两次独立 Device 请求，公开状态最终均为 <code>expired / DEVICE_CODE_EXPIRED</code>：北京时间 10:19:09 → 10:29:09、10:41:56 → 10:51:56；未记录身份或 <code>checked_at</code>。独立目录只留下锁文件和空日志，没有认证缓存；独立执行 <code>dws auth status</code> 返回未认证。本机日常 DWS 的指定账号状态有效，但未被复制或代替 Device 验收。</p><p>用户明确表示 Feynman 网页授权也已成功。因此不能把 Server 的到期记录反推为“用户没有确认”。目前缺少同一设备码的网页成功时间与轮询结果，不能区分到期后的确认、不同请求或 CLI 轮询失败；受限读取和撤权拒绝仍未进行。现有版本 DWS 原生等待与 Feynman 托管等待均上限 10 分钟，不擅自延长或扩大权限。需要核对成功页面或脱敏的同一次轮询记录，之后再定重试 / 修复路径。</p></details>
+    <p>2026-10-08 11:03（北京时间）的新请求已完成真实闭环：原生 Agent MCP 申请 → 用户在有效期内确认 → Server 验证账号并保存独立凭据 → 登记绑定与受限 Grant → Agent 读取指定五分钟窗口内 8 条消息。独立 CLI 核对 <code>complete=true、hasMore=false、failures=[]</code>；撤销测试项目的消息读取 Grant 后，CLI 工具调用返回 403。没有使用本机已有 DWS 缓存替代 Device 成功，没有下载附件或发送消息。详见 <a href="../../testing/mvp-validation-20260930.html#dws-live">真实闭环验证记录</a>。凭据保留在测试 Home 的私有目录，未自动迁移至默认 Home 或授权其他项目。</p>
+    <p class="section-copy">操作风险与其他测试见 <a href="../../testing/smoke-guide.html#dws-device-authorization">Smoke 指南</a>。代码依据：<a href="../../../crates/feynman-server/src/external_access/providers/dws/authorization.rs">设备认证服务</a>、<a href="../../../crates/feynman-server/src/external_access/providers/dws/access.rs">认证 MCP 适配器</a>、<a href="../../../crates/feynman-server/src/external_access/providers/dws/search.rs">企业搜索适配器</a>。</p>
+  </section>
+</main><footer><a href="index.html">← External Access</a><a href="../../reference/external-authentication-flow.html">公共认证与授权流程 →</a></footer></div></body></html>

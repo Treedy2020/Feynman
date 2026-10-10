@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>初版实现与验证 · Feynman Docs</title>
+  <link rel="icon" href="data:,"><link rel="stylesheet" href="../assets/site.css"><script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="mvp-validation" data-docs-root=".."><div class="page"><header class="topbar"></header><main id="content">
+  <section class="hero"><span class="doc-status">初版实现 · 2026-09-30 · DWS 真实闭环于 2026-10-08 补验通过</span><h1>先证明授权、执行与分析链路。</h1><p class="lead">Rust 控制端在本机，Codex 使用公司模型身份，原生执行位于 Spark OpenSandbox。授权 smoke 与历史分析使用不同项目、独立 Workspace 和 Thread，不部署、不对外发消息、不修改业务仓库。</p></section>
+  <nav class="toc" aria-label="本页目录"><a href="#implemented">已实现</a><a href="#model">模型身份</a><a href="#evaluation">评估隔离</a><a href="#verification">方向验证</a><a href="#dws-live">DWS 真实闭环</a><a href="#limits">边界</a></nav>
+  <section class="section" id="implemented"><span class="label">公开接口</span><h2>CLI → Rust Server → 项目 Agent。</h2>
+    <table><thead><tr><th>能力</th><th>入口</th><th>限制</th></tr></thead><tbody>
+      <tr><td>模型登录 / 状态 / 退出</td><td><code>feynman auth login [--device] / status / logout</code></td><td>使用 Feynman 专用 Codex Home；状态不等于推理成功。</td></tr>
+      <tr><td>项目与 Main Agent</td><td><code>projects / workspace / send / tasks / schedules</code></td><td>单 Main Agent；Schedule 暂停默认、忙时排队，错过触发合并。</td></tr>
+      <tr><td>Agent 申请 DWS 登录</td><td>MCP <code>feynman_dws_authorization</code></td><td>需要 owner 授予 <code>dws.auth.device</code>，浏览器确认只能本人完成。</td></tr>
+      <tr><td>外部业务调用</td><td>Connection → Binding → Tool Grant → Source Scope</td><td>认证成功不自动授权业务；每次调用重查绑定、账号和 Grant。</td></tr>
+      <tr><td>指定会话 / 时段读取</td><td>MCP <code>dws_read_messages</code>；CLI <code>access dws-scope</code></td><td>固定 <code>dws chat +chat-messages</code>，不下载附件、不支持任意参数或写消息。</td></tr>
+      <tr><td>基线打包与初始化</td><td><code>evaluation prepare / workspace seed</code></td><td>只导出完整 SHA 的 blob；不带原 Git 数据库、remote 或脏工作树；拒绝覆盖已有内容。</td></tr>
+    </tbody></table>
+  </section>
+  <section class="section" id="model"><span class="label">公司身份 · 非个人凭据</span><h2>GPT 5.6 Terra，推理强度 max。</h2>
+    <p>运营者明确选择 <code>~/.codex-company</code> 对应的公司 LiteLLM Responses 网关。专用 Home 为 <code>~/.feynman/codex</code>，模型 <code>gpt-5.6-terra</code>，<code>model_reasoning_effort=max</code>。只显式导入公司认证缓存，不导入个人配置、历史、MCP、Skill 或 Hook。测试另用临时专用 Home。</p>
+    <p>运行时移除继承的 <code>OPENAI_API_KEY / CODEX_API_KEY / CODEX_ACCESS_TOKEN</code>。公司 Key 留在控制端的私有 auth.json，原生 Codex 读取；不进入镜像、Docker 环境或项目事实包。公司网关的实际权限以完整推理 turn 验证，不以登录状态替代。</p>
+    <p>准确模型名与 max 的支持参见 <a href="https://developers.openai.com/api/docs/models/gpt-5.6-terra">OpenAI 官方 GPT-5.6 Terra 文档</a>。官方模型能力不证明公司网关对该账号开放。</p>
+  </section>
+  <section class="section" id="evaluation"><span class="label">精选样本 · 非完整历史盲测</span><h2>业务答案不放进被测输入。</h2>
+    <p>E-01 使用 EDC 固定基线和截止点前的会议摘要；C-01 使用 Cohort 固定基线、模板反馈消息与去掉临床示例的模板文本。输入不含后续提交、tag diff、参考方案或评估端文档。源码中的链接、凭据样例、体积过大且非必要的参考材料按明确前缀排除，清单记录全部遗漏。</p>
+    <p>每例建立新项目、Workspace 和 Thread，不授权实时 DWS，也不让实时认证测试的记忆进入历史案例。事实包记录原始资源 hash 和脱敏变换；精选消息完整性不等于整个历史的完整性。原始消息、方案和详细模型日志仅保存在私有证据目录，不进入本文。</p>
+    <p>独立运营者通过 Docker 读取容器，核对前后源码集合 / SHA-256、事实内容、初始化清单、Git HEAD / 状态 / 提交数、remote 缺失、宿主认证缓存缺失。容器仅挂载自身命名卷，非 privileged，capabilities 全部丢弃，no-new-privileges，端口仅 loopback。</p>
+    <p class="note warning">root Executor 能改变 chmod 权限。当前只读调查是约定 + 运行后检测，不是硬只读沙盒；Docker 网络也没有强制拒绝全部外连，因此不是强隔离的完整历史盲测或不可信多租户安全认证。正式评估需独立只读挂载 / 非 root、显式出网策略、跨项目和工具权限审计。</p>
+  </section>
+  <section class="section" id="verification"><span class="label">证据优先</span><h2>协议回归与模型分析分别验收。</h2>
+    <p>2026-09-30 回归通过 23 项 Rust 测试、32 项 Python CLI / HTTP / MCP 测试，另 4 项远程原生 Executor 用例为 opt-in 跳过；Clippy 与 12 项 HTML 文档检查通过。新增继承凭据隔离、事实截止校验及 execd 文件 metadata / JSONL / SSE 兼容已先失败、后修复通过。真实 Spark 镜像和公司模型 turn 已验证。当日 DWS 只验证到设备链接，未计真实业务读取；<a href="#dws-live">2026-10-08 已补验授权、读取与撤权闭环</a>。</p>
+    <table><thead><tr><th>真实 Case</th><th>当前结果</th><th>解释边界</th></tr></thead><tbody>
+      <tr><td>EDC E-01</td><td>完成，约 8 分 08 秒；587 个源码文件和事实包运行前后完整性通过。初步方向合理，契约待 owner 确认。</td><td>识别部分状态变更链路，补建模与验证；入组号由服务端生成，不猜动作契约、不引入随机化。</td></tr>
+      <tr><td>Cohort C-01</td><td>完成，约 12 分 35 秒；942 个源码文件和事实包运行后独立完整性通过。核心方向合理，材料状态区分需要加强。</td><td>识别既有四段邮件和多条生成入口，建议受控语义、轻量结构检查及导出回归；应更明确区分“已提供但待核实”与“真正缺失”，不计完美语义通过。</td></tr>
+      <tr><td>EDC 合成做法对照</td><td>完成，约 16 分 35 秒；587 个源码文件和事实包前后完整性通过。协议 runner 通过，初步审阅支持其核心判断。</td><td>拒绝客户端写号 / 字段非空当作 UAT 证据，保留合法目标，替代为状态迁移 → 后端生成 → 读回与防重验证。附加建议明确标注为合成，不伪装成真实历史需求。</td></tr>
+    </tbody></table>
+    <p>耗时是创建 Run 至完成的墙钟时间，不是 Sandbox 启动时间或通用性能承诺。每例只运行一次，未评分为稳定成功率。正常 E-01 偏向显式选择有副作用的状态动作，对照例建议纳入自动选择；该 UX / 安全取舍仍需 owner 决策，不能把两份方案视为完全一致。</p>
+    <p>2026-10-08 使用重新整理的精选输入完成新的 E-01 单次试跑，独立完整性通过，草案暂定评分 86.25 / 100；不是上述 09-30 运行的改写。见 <a href="edc-evaluation-pack.html#pilot-result">本轮逐项结果、缺口与清理记录</a>，标准仍待 owner 定标。</p>
+    <details><summary>恢复、输出与清理记录</summary><p>早期 harness 先遇到 execd 上传协议、验证器参数体积和 CLI 等待超时问题。C-01 的原始 harness 失败报告保留；用公开 <code>runs --wait</code> 恢复查询同一个 Run，没有重发 Prompt。运行前 verifier 的成功是当时控制流进入模型 turn 的前提，但未单独保存该结果；运行后使用原始冻结输入独立核对完整性。后续 runner 将等待超时视为继续查询同一 Run，而不是另起一轮。</p><p>原始增量输出包含草稿与最终答复，均保留。审阅另用匹配 <code>runtime_turn_id</code> 的原生 <code>task_complete.last_agent_message</code> 提取最终文本；这是输出溯源，不替代公开 Run 状态或独立完整性验证。私有证据包含各次原始成功 / 失败报告、最终方案和提取来源，公开页面不嵌入聊天或临床原文。</p><p>测试拥有的 Sandbox 容器、项目卷、OpenSandbox 服务、SSH 转发及本地测试 Server 已停止 / 清理；不触碰已有 uptime-kuma。临时模型认证副本已移除，私有审计证据和构建镜像缓存保留。默认本地 CLI / Server 已安装；未常驻启动服务。</p></details>
+    <pre><code>cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+python3 -m unittest discover -s scripts/smoke -p 'test_*.py' -v
+# 真实验证：会产生模型费用，需要本人 device 同意
+python3.13 scripts/smoke/run_mvp_smoke.py \
+  --source-codex-home /absolute/company-codex-home \
+  --fixture-dir /private/prepared-fixtures --dws /absolute/dws \
+  --model gpt-5.6-terra --reasoning-effort max \
+  --expected-dws-profile 'VERIFIED_CORP_ID:VERIFIED_USER_ID'</code></pre>
+    <p>真实 runner 验证 native MCP 调用、独立的实际消息读取和 Grant 撤销拒绝，再做固定基线分析。<code>--authorization-only</code> 单独补验实时授权，不重复历史方向案例；<code>--direction-only</code> 独立运行历史案例，不申请实时认证；<code>--approach-contrast</code> 增加明确标注的合成做法对照。复用目标 ID 前核对已认证账号与来源 profile 一致，不在另一个组织直接使用既往 ID。方案语义由评估人对事实和代码逐项审阅，不用关键词匹配冒充“正确方向”。公开状态与私有完整证据分开保存。</p>
+  </section>
+  <section class="section" id="dws-live"><span class="label">2026-10-08 · 真实授权 / 消息 / 拒绝</span><h2>Agent 申请，人确认，Server 受限执行。</h2>
+    <p>11:02:40（北京时间）真实 Main Agent 创建 Device 请求；11:03:01 DWS 取得本次授权的凭据，Server 随后独立核验公司账号，状态达到 <code>authorized</code>。运营者在本机浏览器打开当次链接并由用户确认。没有迁移本机日常 DWS 缓存，没有使用个人模型凭据，也没有自动替用户同意。</p>
+    <table><thead><tr><th>步骤</th><th>实际证据</th><th>边界</th></tr></thead><tbody>
+      <tr><td>原生 Agent 申请</td><td>公司 <code>gpt-5.6-terra / max</code>，Spark 原生 Shell 与 Feynman MCP；授权请求和读取两次 Run 均完成。</td><td>模型 / Thread 在控制端，执行世界为独立 OpenSandbox；认证不是模型文字自述。</td></tr>
+      <tr><td>账号与项目绑定</td><td>认证账号与既往来源 profile 相符；登记 Connection，显式 Binding、消息 Scope 和读取 Grant。</td><td>登录不等于业务获权，旧组织的目标 ID 不跨账号复用。</td></tr>
+      <tr><td>实际消息读取</td><td>Agent 调用 <code>dws_read_messages</code>；独立 CLI 核对 8 条消息，包括两条预先核实的来源消息。<code>complete=true / hasMore=false / failures=[]</code>，<code>stopReason=range_end</code>。</td><td>只读杨睿仪单聊的 [2026-09-21 18:30, 18:35) 北京时间窗口；不下载图片 / 文件，不扩大检索。Agent 摘要不是完整性判断的唯一依据。</td></tr>
+      <tr><td>撤销与拒绝</td><td>Owner 撤销 <code>dws.chat.messages.read</code> 后，同一工具的 CLI 调用失败，返回 403。</td><td>这是 Broker 入口的真实拒绝验证，不是额外运行了一次模型拒绝用例；撤销的是测试项目 Tool Grant，不是退出本机 DWS 账号。</td></tr>
+    </tbody></table>
+    <p>完整 smoke 约 61 秒（含用户确认），不代表通用 SLA。独立缓存和密钥文件实际权限为 0600，目录私有；详细消息、原生会话、凭据不进入公开文档。测试容器、项目卷、临时 Server / OpenSandbox 服务和 SSH 转发已清理，清理错误为空；临时公司模型认证副本已移除。DWS 授权缓存保留在测试 Home 的私有目录以供审计，未自动迁移到默认 <code>~/.feynman</code>，也未为其他项目授予读取权限。</p>
+    <details><summary>此前到期记录与本次成功的区别</summary><p>两条旧请求分别在 10:29:09 和 10:51:56 到期；用户表示网页也确认过，不能据此断言用户没有同意。用户随后说明确认发生在“刚才”，当时已晚于旧请求截止，接收结果的进程已经停止。这个时间关系可以解释没有接收凭据，但没有足够原始轮询证据排除所有旧请求原因。旧失败报告保留，不改写成通过。本次用新设备码，在等待进程存活且有效期内确认，实际得到授权、真实消息和撤权拒绝结果；未修改授权等待上限或 DWS 源码。</p></details>
+  </section>
+  <section class="section" id="limits"><span class="label">尚未验收 / 尚未实现</span><h2>不把初版称为自维护已完成。</h2>
+    <ul><li>当前用户身份是 loopback 固定 local Principal，不是对外 SaaS 用户登录、多租户凭据 Vault 或生产认证。</li><li>Reviewer、多 Agent 可插拔生命周期、监听源开窗与插队投递仍以设计为准；现有 Schedule 是初步单 Agent 定时投递。</li><li>没有自动部署、打 tag、推代码、发送钉钉消息或修改 EDC / Cohort 业务代码。</li><li>两例精选历史分析最多证明初步方向判断，不证明稳定成功率、完整历史覆盖或自动自维护能力。黄金标准仍需项目 owner 定标。</li><li>工作区持久卷和本地状态分别持久化；临时服务结束不等于备份与灾难恢复已验收。</li></ul>
+    <p><a href="iteration-direction.html">迭代方向测试设计</a> · <a href="historical-source-map.html">评估端来源映射（含后续答案，禁止给予被测 Agent）</a> · <a href="../modules/external-access/dws.html">DWS 授权契约</a></p>
+  </section>
+</main><footer><a href="../index.html">← 架构总览</a></footer></div></body></html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="历史 GKE 测试集群已销毁；当前 MVP 不依赖 GKE，本页面不表示重新创建或启用计费。">
+  <title>Feynman Docs · GKE Sandbox 验证</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="gke" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status historical">历史验证 · 2026-09-28</span><h1>GKE Sandbox 验证</h1><p class="lead">历史 GKE 测试集群已销毁；当前 MVP 不依赖 GKE，本页面不表示重新创建或启用计费。</p></section>
+    <nav class="doc-outline" aria-label="本页章节"><a href="#结论和范围">结论和范围</a><a href="#实际环境">实际环境</a><a href="#验收证据">验收证据</a><a href="#权限与安全检查">权限与安全检查</a><a href="#本轮诊断修正">本轮诊断修正</a><a href="#复现与清理">复现与清理</a></nav>
+    <article class="doc-body"><p class="source-title" id="gke-sandbox-内容读取-smoke-2026-09-28">GKE Sandbox 内容读取 Smoke · 2026-09-28</p>
+<h2 id="结论和范围">结论和范围</h2>
+<p><strong>读取 Smoke 通过。</strong> 本地新启动的 Codex Agent 实际调用远程工具，读取了 GKE Agent Sandbox 的文件，并返回与独立验证器一致的随机标记和文件内容。 随机标记在 Pod 内生成，不出现在提示词中，验证器在 Agent 运行期间仅在内存中保存预期值。</p>
+<pre class="text"><code>本地 Codex Agent
+       |
+       v
+宿主侧受限 STDIO MCP（固定 Pod、固定命令、文件白名单）
+       |
+       v
+GKE Agent Sandbox / gVisor / PVC /workspace</code></pre>
+<p>这不是完整的 Feynman CLI → Server → GKE 测试：Agent 仍运行在本机，尚未 将生产 WorkspaceProvider 接入 GKE，也未测试长期会话、暂停恢复、Pod 重建、 Generator/Reviewer 或应用部署。诊断脚本使用 Python 标准库；生产后端仍为 Rust。</p>
+<h2 id="实际环境">实际环境</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>项目</th>
+<th>实际值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GCP 项目</td>
+<td><code>nomadic-memento-464304-u1</code></td>
+</tr>
+<tr>
+<td>区域</td>
+<td><code>asia-southeast1</code>（新加坡）</td>
+</tr>
+<tr>
+<td>临时集群</td>
+<td><code>feynman-smoke-260928</code>，Autopilot</td>
+</tr>
+<tr>
+<td>GKE 版本</td>
+<td><code>1.36.4-gke.1247000</code></td>
+</tr>
+<tr>
+<td>托管插件</td>
+<td><code>addonsConfig.agentSandboxConfig.enabled = true</code></td>
+</tr>
+<tr>
+<td>Sandbox</td>
+<td><code>agents.x-k8s.io/v1beta1</code>，<code>reader-smoke</code>，<code>Ready=True</code></td>
+</tr>
+<tr>
+<td>运行时</td>
+<td>Pod <code>runtimeClassName=gvisor</code>；就绪节点带 <code>sandbox.gke.io/runtime=gvisor</code> 标签</td>
+</tr>
+<tr>
+<td>Workspace</td>
+<td><code>/workspace</code>，外部 <code>standard-rwo</code> PVC，10 GiB，<code>Bound</code></td>
+</tr>
+<tr>
+<td>Agent CLI</td>
+<td><code>codex-cli 0.157.1</code>，新建 ephemeral 会话</td>
+</tr>
+</tbody>
+</table>
+<p>使用原生托管 Agent Sandbox，而非普通 Pod 冒充沙盒；启用方式参考 <a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox">Google 官方安装说明</a>。 外部 PVC 的用法与官方的 <a href="https://docs.cloud.google.com/kubernetes-engine/docs/how-to/agent-sandbox-storage">stateful workspace 模式</a> 一致，但本轮只验证挂载与读取，不将其视为恢复测试。</p>
+<h2 id="验收证据">验收证据</h2>
+<ul>
+<li>Codex 原生事件记录了三个已完成的 <code>sandbox_smoke</code> MCP 调用： <code>sandbox_read_file(probe.json)</code>、<code>sandbox_list_files()</code>、<code>sandbox_read_file(note.txt)</code>。</li>
+<li>MCP 执行面的独立审计也记录了对应三次成功远程读取。</li>
+<li>Agent 返回的随机标记、消息、Pod hostname 和 <code>note.txt</code> 完整内容与验证器一致。</li>
+<li>返回目录为 <code>lost+found</code>、<code>note.txt</code>、<code>probe.json</code>，与实际 PVC 根目录一致。</li>
+<li><code>host_command_count = 0</code>；测试关闭本地命令工具、浏览器、插件和其他 MCP 连接。</li>
+<li>随机标记 SHA-256：<code>f8a8c2d633a56850f62b8eecd3c0e22980e147aec3c26db31d0330a84deda0aa</code>。</li>
+<li>标准输出汇总 <code>passed=true</code>，完整实时 Smoke 进程退出码为 <code>0</code>。</li>
+</ul>
+<h2 id="权限与安全检查">权限与安全检查</h2>
+<ul>
+<li>Pod 中没有挂载 Kubernetes ServiceAccount token，容器内断言已验证。</li>
+<li>云凭证保留在宿主，不进入镜像或 Sandbox。</li>
+<li>MCP 使用单独的短期 Kubernetes token，仅获指定 Pod 的 <code>get</code> 和 <code>pods/exec</code> 权限。</li>
+<li>使用该 token 创建 Secret 的授权检查返回 <code>no</code>；读取未分配 Pod 返回 <code>Forbidden</code>。</li>
+<li>公开 STDIO 边界回归：请求 <code>../../etc/passwd</code> 被拒绝，测试通过。</li>
+<li>已配置 Sandbox ingress/egress deny-all NetworkPolicy；本轮未进行网络逃逸或攻击测试。</li>
+</ul>
+<p>注意：<code>pods/exec</code> 权限本身并不等于只读文件权限。只读约束由宿主侧 MCP 的 固定命令和白名单实施。这是最小诊断工具，不是已完成的生产多租户安全网关。 未来生产服务必须将工作区分配、凭证和执行边界放在受信执行面中。</p>
+<h2 id="本轮诊断修正">本轮诊断修正</h2>
+<p>按 <code>diagnosing-bugs</code> 流程使用服务端 dry-run 和真实 CRD 区分初始化问题与 schema 问题：</p>
+<ol type="1">
+<li>新集群初始化期间 CRD 和 GKE Warden 尚未就绪：等待，不绕过策略。</li>
+<li>当前集群 <code>v1beta1</code> 的 <code>spec</code> 不包含 <code>replicas</code>；实际支持 <code>operatingMode</code>。 替换为 <code>operatingMode: Running</code> 后，服务端 dry-run 从失败变为通过。</li>
+<li>首次 Agent 验证错误地关闭了 Code Mode 工具执行宿主，导致未发生远程读取， Smoke 正确返回失败。保留该必需组件，同时单独关闭本地 shell 后重跑通过。 官方文档也说明了默认的 <a href="https://learn.chatgpt.com/docs/app-server#connect-a-remote-code-mode-host">Code Mode 宿主连接</a>。</li>
+</ol>
+<p>按 <code>tdd</code> 保留了真实 STDIO 边界的越界读取回归，实时随机标记比对提供端到端验收。 测试没有模拟 GKE 或伪造 Agent 结果。</p>
+<h2 id="复现与清理">复现与清理</h2>
+<p>脚本和操作限制见 <a href="../testing/smoke-guide.html">Smoke README</a>。</p>
+<p>本次测试的临时 namespace、Sandbox、PVC、对应 Compute 磁盘、集群、专用 VPC、 子网和节点服务账号均已删除；专用服务账号的项目 IAM 绑定已移除。 <code>DELETE_CLUSTER</code> 操作最终为 <code>DONE</code>，项目集群列表、指定 VPC/子网列表均为空； 指定磁盘和服务账号列表也为空，指定成员的项目 IAM 绑定查询无结果。 临时 Pod/PVC 只包含测试数据；删除后不再保留其文件。仓库保留的是无凭证的测试脚本和记录。 临时 admin/reader kubeconfig 均已移除；仅在本机临时目录保留诊断日志和测试文件的 Agent 输出。 GKE API 保持开启，方便后续接入；清理资源不会取消测试期间已经发生的计费。</p>
+<p>本机安装了 <code>gke-gcloud-auth-plugin</code>。Google 安装器同时更新了其 Python 环境， 并通过 Homebrew 安装 Python 3.13/更新依赖；这些本机工具未回滚。 使用的 kubectl 1.36.4 下载到临时目录并核对了官方 SHA-256，没有替换系统 kubectl。 测试 kubeconfig 使用独立临时路径，没有修改全局 <code>~/.kube/config</code>。</p>
+<p>下一步才是把已验证的远程访问方式接入 Rust WorkspaceProvider/Agent 工具配置， 然后从真实 Feynman 项目会话完成同样的验收。</p>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>

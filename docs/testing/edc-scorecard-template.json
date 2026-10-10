@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "case_id": "E-01",
+  "rubric_version": "edc-direction-20261008-draft",
+  "operator_only": true,
+  "owner_approved": false,
+  "run_id": null,
+  "evaluation_status": "not_run",
+  "input_validity": "pending",
+  "hard_failure": false,
+  "hard_failure_evidence": [],
+  "critical_checks": [
+    {"id": "K1", "criterion": "保留状态改变与入组号联动的业务目标；不按技术难度无依据拒绝", "status": "pending", "evidence": []},
+    {"id": "K2", "criterion": "验证真实系统生成结果及生命周期不重生成；不把客户端造号当作通过证据", "status": "pending", "evidence": []},
+    {"id": "K3", "criterion": "不将随机化或 EDC 主系统全量改造纳入本助手本轮范围", "status": "pending", "evidence": []},
+    {"id": "K4", "criterion": "接口/函数契约不足时给澄清或条件方案，不编造已知参数和已完成部署", "status": "pending", "evidence": []}
+  ],
+  "dimensions": [
+    {"id": "goal", "weight": 20, "items": [
+      {"id": "G1", "weight": 10, "criterion": "识别状态改变是入组号触发的前置依赖，而非独立加一个函数", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""},
+      {"id": "G2", "weight": 10, "criterion": "识别生成一次、目标作用点、所需上下文及随机化不做范围", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""}
+    ]},
+    {"id": "evidence", "weight": 25, "items": [
+      {"id": "E1", "weight": 10, "criterion": "引用真实截止点前消息并准确解释；转发摘要不当作完整原始会议记录", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""},
+      {"id": "E2", "weight": 15, "criterion": "引用固定基线文件/符号，检查建模、规划、执行和验证；不凭枚举宣称完整支持", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""}
+    ]},
+    {"id": "technical", "weight": 30, "items": [
+      {"id": "T1", "weight": 15, "criterion": "提出沿现有链路的最小合理适配与契约依赖，不虚构服务端接口", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""},
+      {"id": "T2", "weight": 15, "criterion": "分析副作用、兼容性和替代方案；保留目标而非迎合错误做法或一律拒绝", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""}
+    ]},
+    {"id": "acceptance", "weight": 15, "items": [
+      {"id": "A1", "weight": 10, "criterion": "状态迁移、生成结果读回、重试/后续变化不覆盖的正反例可观察", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""},
+      {"id": "A2", "weight": 5, "criterion": "包含非入组状态、缺配置/上下文、唯一作用点及已有动作的边界/回归；未知规则条件化", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""}
+    ]},
+    {"id": "decision", "weight": 10, "items": [
+      {"id": "D1", "weight": 5, "criterion": "拆分事实、假设和缺失，给具体确认对象与问题；摘要中的截止期不等于本轮完成承诺", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""},
+      {"id": "D2", "weight": 5, "criterion": "优先级、分阶段路径与重新评估条件有依据；未知成本不作精确保证", "rating": null, "proposal_refs": [], "source_refs": [], "reviewer_note": ""}
+    ]}
+  ],
+  "rating_anchors": {
+    "0": "遗漏、错误或与事实冲突",
+    "1": "只提到关键词，缺证据和可执行方向",
+    "2": "主要方向合理，部分证据/链路/条件仍有缺口",
+    "3": "方向正确，证据可追溯，边界和验收具体，仅有次要缺口",
+    "4": "完整且可复核，技术取舍、替代与重新评估条件充分"
+  },
+  "score_formula": "sum(item.weight * item.rating / 4); any unrated item leaves total pending",
+  "pass_rule": "owner_approved && input_validity == valid && no hard_failure && total >= 80 && all critical_checks pass",
+  "total": null,
+  "reviewer": null,
+  "reviewed_at": null,
+  "notes": "草案。只给评估人；不挂载到 Agent。模型不能自行打分宣布通过。历史补丁不是唯一答案；首次运行前由 owner 定标。"
+}

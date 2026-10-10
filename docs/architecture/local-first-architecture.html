@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Feynman 文档入口：可交互 SVG 架构图、组件细节、CLI 运行指南与安全边界。">
+  <title>Feynman Docs · 架构总览</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+  <script src="../assets/architecture.js" defer></script>
+</head>
+<body data-doc="overview" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero">
+      <span class="doc-status">Local-first 多项目 · 当前实现 + 权限设计</span>
+      <h1>一个 Feynman，管理多个项目。</h1>
+      <p class="lead">通过 Skill + CLI 创建、调度和沟通各个项目。每项目拥有长期 Main Agent 与独立 Workspace；Feynman 代项目维护认证申请和权限流程。会话在本地，执行在远端，项目获权不自动互通。</p>
+      <p class="note">已实现 <a href="../architecture/agent-schedules.html">单 Agent + Schedule 投递</a>：用户管理身份与能力、事实源实例独立持久化、整条规则固定开窗、Inbox 排队与原生 steer。可先创建无 Agent 项目。<a href="../architecture/visual-console.html">本机可视化工作台</a>已实现；新增 <a href="../architecture/visual-console.html#desktop">macOS Desktop、SSE 与消息中心</a>，连接同一 Rust Server。多 Agent 与申请类通知仍是后续能力。</p>
+      <p class="note">外部渠道使用 <a href="../architecture/external-access-abstraction.html#traits">认证与安全组合策略</a>的最小实现：认证、项目／Agent 权限、私有凭据、Proxy 交付、固定执行与元数据审计分开。<a href="../architecture/external-access-abstraction.html#subscriptions">事实订阅</a>及本机历史查询已接入；<a href="../architecture/external-access-abstraction.html#environment">项目环境注入</a>与<a href="../architecture/external-access-abstraction.html#memory">通用长期记忆</a>仍是目标设计。</p>
+    </section>
+    <section aria-label="交互架构图">
+      <div class="architecture-workbench">
+        <div class="canvas-column">
+          <div class="canvas-toolbar">
+            <span class="canvas-toolbar-label">系统架构 / 点击组件查看细节</span>
+            <div class="canvas-controls">
+              <button class="small-button" type="button" data-diagram-view="projects" aria-pressed="true">多项目管理</button>
+              <button class="small-button" type="button" data-diagram-view="execution" aria-pressed="false">单项目执行</button>
+              <button class="small-button" type="button" data-diagram-view="access" aria-pressed="false">外部权限模块</button>
+              <button class="small-button" id="show-future" type="button" aria-pressed="false">显示预留能力</button>
+              <button class="small-button" id="zoom-out" type="button" aria-label="缩小架构图">−</button>
+              <button class="small-button" id="zoom-reset" type="button" aria-label="重置架构图缩放与位置">100%</button>
+              <button class="small-button" id="zoom-in" type="button" aria-label="放大架构图">+</button>
+            </div>
+          </div>
+          <div id="diagram-viewport" class="diagram-viewport" aria-label="可滚动的 SVG 架构画布">
+            <svg id="architecture-svg" class="architecture-svg" role="group" aria-labelledby="svg-title svg-desc"></svg>
+          </div>
+          <div class="canvas-footer"><span><i class="legend-line"></i>执行 / 数据</span><span><i class="legend-line dashed"></i>控制 / 申请</span><span>虚线框 = 目标设计或预留 · A / B 为示例，不是实时状态</span></div>
+          <div class="component-picker" id="component-picker" aria-label="按名称选择组件"></div>
+        </div>
+        <aside id="component-inspector" class="component-inspector" aria-live="polite" aria-atomic="true" aria-labelledby="component-title">
+          <div class="inspector-heading">COMPONENT DETAIL</div><h2 id="component-title">Feynman Server</h2><p>点击任意组件查看职责、持久化位置、权限边界和 CLI 入口。</p>
+        </aside>
+      </div>
+      <p class="canvas-description">默认展示一个 Feynman 管理 Project A / B / … / N；切换「单项目执行」查看原生 Executor 细节。「外部权限模块」单独展示 Broker、账号、绑定与首批 DWS / GitLab / Git，基本 Rust V1 已实现。用户入口当前为 CLI；<a href="../architecture/visual-console.html">Local Console</a>是设计中的第二个入口，连接同一 Rust Server。此图支持键盘、缩放和组件深链接；没有后台请求。</p>
+      <noscript><p class="note">交互图需要 JavaScript。Feynman 管理多个 Project；每个项目拥有 Main Agent、Thread、队列、Workspace 和 Grant。外部认证由 Server 维护，项目使用权需明确批准。</p></noscript>
+    </section>
+
+    <nav class="toc" aria-label="本页目录"><a href="#projects">多项目与权限</a><a href="#principles">核心约定</a><a href="#state">持久化</a><a href="#boundaries">能力边界</a><a href="#reading">继续阅读</a></nav>
+    <section class="section" id="projects">
+      <span class="label">多项目管理</span><h2>Feynman 是管家，不是一个项目的 Agent。</h2>
+      <div class="grid">
+        <article><h3>共享控制面</h3><p class="section-copy">统一创建、查询和管理多个 Project，维护任务调度与用户沟通；为各项目准备执行环境、发起必要的认证与权限申请。</p></article>
+        <article><h3>独立项目上下文</h3><p class="section-copy">每项目一个 Main Agent、Thread、任务队列、Schedule 和 Workspace。可跨项目并行，但不会自动继承其他项目的消息或授权。</p></article>
+        <article><h3>显式外部授权</h3><p class="section-copy">Connection 表示登记的账号，Project Binding 指定账号 / 仓库 / 期限，Tool Grant 指定可调用业务。Agent 提需求，用户批准，Server 每次调用重新检查。</p></article>
+      </div>
+      <p class="note">「已登录」不等于「所有项目都可以使用」。同一所有者可以显式复用外部账号，但 A、B 必须分别获权；见 <a href="../modules/external-access/index.html">External Access 独立模块</a>。<a href="../architecture/environment-leases-memory.html">版本化环境装载、使用租约与长期记忆</a>已追加，Provider 真正短期签发仍不支持。</p>
+    </section>
+    <section class="section" id="principles">
+      <span class="label">核心约定</span><h2>管家、项目 Agent、执行环境，各有职责。</h2>
+      <div class="grid">
+        <article><h3>本地 Harness 是入口</h3><p class="section-copy">用户自己的会话借助 Skill 与 CLI 查询状态、委派工作和处理授权，不替代项目 Main Agent。</p></article>
+        <article><h3>项目保有长期会话</h3><p class="section-copy">消息、任务与定时计划进入同一个 Conversation。进程可以重启；恢复依赖原生日志，而不只是一个 Thread ID。</p></article>
+        <article><h3>Workspace 可以替换</h3><p class="section-copy">原生工具在明确绑定的远端环境执行。工作卷保留文件；卷外依赖、进程、PTY 和内存不会随卷恢复。</p></article>
+      </div>
+    </section>
+    <section class="section" id="state">
+      <span class="label">持久化</span><h2>共享本地存储，独立远端项目卷。</h2>
+      <div class="table-wrap"><table><thead><tr><th>状态</th><th>位置</th><th>职责</th></tr></thead><tbody>
+        <tr><td>Feynman 项目状态</td><td><code>~/.feynman/rust-platform.sqlite3</code></td><td>项目消息、Run、事件、任务、定时计划、授权、Thread ID 和 Workspace 绑定。</td></tr>
+        <tr><td>原生 Agent 会话</td><td><code>~/.feynman/codex/</code></td><td>原生 JSONL、状态库、配置和认证。项目 Agent 显式绑定此 Home，不沿用个人 harness 目录。</td></tr>
+        <tr><td>外部授权缓存</td><td><code>~/.feynman/private/dws/</code></td><td>Device 登录私有缓存；Connection 使用时重新验证，登录不等于业务获权。</td></tr>
+        <tr><td>外部权限模块状态</td><td><code>~/.feynman/private/external-access/</code></td><td>Connection、限期绑定、申请、最小审计及私有 Token 文件；不是加密 Vault。</td></tr>
+        <tr><td>远端项目文件</td><td>独立 volume → <code>/workspace</code></td><td>代码、文件和卷内依赖；与本地 Home 分别备份。</td></tr>
+      </tbody></table></div>
+      <p class="section-copy">Feynman 消息主存储仍是 SQLite。JSONL 导出尚未实现；复用 Codex 原生日志，不另外造上下文恢复机制。</p>
+    </section>
+    <section class="section" id="boundaries">
+      <span class="label">能力边界</span><h2>当前实现，不等于全部目标架构。</h2>
+      <div class="grid two">
+        <article class="card"><span class="status">已实现</span><h3>Local-first 多项目，每项目一个 Main Agent</h3><p>多项目管理、各自的长期会话、任务、显式审批、定时计划、用户目录、OpenSandbox 生命周期和原生 Executor。Schedule 默认暂停，依赖本机服务运行。</p></article>
+        <article class="card"><span class="status">初版已实现</span><h3>Agent、Schedule、环境与记忆</h3><p>每项目至多一个未归档 Agent，可启停、归档、管理能力。Schedule / inbox send 使用持久 Inbox，来源独立历史可被 Agent 查询。详见 <a href="../architecture/agent-schedules.html">Agent 与 Schedule</a>及<a href="../architecture/environment-leases-memory.html">环境、使用租约与记忆</a>。多 Agent / Reviewer 后续；个人版不做强租户隔离。</p></article>
+      </div>
+      <p class="note warning">这是个人可信 MVP：loopback 开发服务、Docker/runc 外层隔离、共享 bridge 与未认证执行端点。远端 <code>:danger-full-access</code> 仅在外层容器内且需运营者同意。不能直接对不可信租户开放。</p>
+      <p class="section-copy">DWS device 成功缓存可登记为 Connection，搜索使用指定绑定；GitLab、Git、Slate、Drlee 已有固定原生接入，支持受控 Sandbox clone。工具登录、业务 Grant 与执行审批是三个不同的权限环节。见 <a href="../modules/external-access/index.html">外部权限模块与实测边界</a>。</p>
+    </section>
+    <section class="section" id="reading">
+      <span class="label">文档目录</span><h2>按问题继续阅读。</h2>
+      <div class="directory-list">
+        <a class="directory-item" href="../architecture/local-user-home.html"><strong>用户目录与认证 ↗</strong><p>专用 CODEX_HOME、初始化、迁移保护与备份约定。</p></a>
+        <a class="directory-item" href="../architecture/local-first-main-agent-v1.html"><strong>CLI 与运行指南 ↗</strong><p>项目任务、定时计划、原生环境与 Provider 配置。</p></a>
+        <a class="directory-item" href="../architecture/agent-schedules.html"><strong>Agent 与 Schedule 设计 ↗</strong><p>单 Agent、统一收件箱、投递状态机、整条 Schedule 开窗与历史补查。</p></a>
+        <a class="directory-item" href="../architecture/visual-console.html"><strong>可视化工作台 ↗</strong><p>Project-first 导航：项目内选择 Agent 会话，并管理 Schedule、观测源、Workspace 与审计。</p></a>
+        <a class="directory-item" href="../testing/iteration-direction.html"><strong>迭代方向测试 ↗</strong><p>固定版本与历史事实，评估 EDC / Cohort 的需求理解、迭代方案与证据边界。</p></a>
+        <a class="directory-item" href="../modules/external-access/index.html"><strong>External Access 独立模块 ↗</strong><p>首批 DWS / GitLab / Git、账号绑定、申请流程和可运行 CLI。</p></a>
+        <a class="directory-item" href="../modules/external-access/dws.html"><strong>DWS CLI ↗</strong><p>设备登录、状态、操作命令、MCP / HTTP 与企业搜索。</p></a>
+        <a class="directory-item" href="../reference/external-authentication-flow.html"><strong>公共认证与授权流程 ↗</strong><p>跨 Provider 的账号、项目许可、状态检查、撤销和凭证边界。</p></a>
+        <a class="directory-item" href="../architecture/backend-cli-v1.html"><strong>后端与 CLI 契约 ↗</strong><p>领域对象、HTTP 操作与接口演进范围。</p></a>
+      </div>
+    </section>
+  </main>
+  <footer><span>Feynman Docs · 当前基线 / 2026-09-29</span><span>本地 HTML · 无 CDN · 无遥测</span></footer>
+</div>
+</body>
+</html>

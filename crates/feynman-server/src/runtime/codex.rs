@@ -17,14 +17,23 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 pub struct CodexAppServerRuntime {
     sessions: Mutex<HashMap<String, Arc<CodexSession>>>,
     database_path: PathBuf,
+    codex_home: PathBuf,
+    access_server_url: Option<String>,
 }
 
 impl CodexAppServerRuntime {
-    pub fn new(database_path: impl Into<PathBuf>) -> Self {
+    pub fn new(database_path: impl Into<PathBuf>, codex_home: impl Into<PathBuf>) -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             database_path: database_path.into(),
+            codex_home: codex_home.into(),
+            access_server_url: None,
         }
+    }
+
+    pub fn with_access_server(mut self, server_url: String) -> Self {
+        self.access_server_url = Some(server_url);
+        self
     }
 }
 
@@ -33,12 +42,13 @@ struct CodexSession {
     session_id: String,
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
-    pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
+    pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, RpcFailure>>>>,
     active_turn: Mutex<Option<ActiveTurn>>,
     thread_id: Mutex<Option<String>>,
     approvals: Mutex<HashMap<String, Value>>,
     next_id: AtomicU64,
     alive: std::sync::atomic::AtomicBool,
+    closing: std::sync::atomic::AtomicBool,
     initialized: std::sync::atomic::AtomicBool,
     init_lock: Mutex<()>,
     thread_lock: Mutex<()>,
@@ -49,9 +59,44 @@ struct ActiveTurn {
     turn_id: Option<String>,
     events: mpsc::Sender<AgentRuntimeEvent>,
 }
+enum RpcFailure {
+    Rejected(String),
+    Transport(String),
+}
 
 #[async_trait]
 impl AgentRuntime for CodexAppServerRuntime {
+    async fn steer(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+        turn_id: &str,
+        message: &str,
+    ) -> PlatformResult<Option<String>> {
+        let Some(session) = self.sessions.lock().await.get(project_id).cloned() else {
+            return Ok(None);
+        };
+        {
+            let active = session.active_turn.lock().await;
+            if !active
+                .as_ref()
+                .is_some_and(|a| a.thread_id == thread_id && a.turn_id.as_deref() == Some(turn_id))
+            {
+                return Ok(None);
+            }
+        }
+        // Explicit protocol errors are non-acceptance; transport failure is ambiguous.
+        let result=match session.request("turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn_id,"input":[{"type":"text","text":message,"text_elements":[]}]})).await {
+            Err(PlatformError::Conflict(_))=>return Ok(None),
+            result=>result?,
+        };
+        if result["turnId"].as_str() != Some(turn_id) {
+            return Err(PlatformError::Runtime(
+                "steer response did not confirm expected turn".into(),
+            ));
+        }
+        Ok(Some(turn_id.into()))
+    }
     async fn start_turn(
         &self,
         input: AgentTurnInput,
@@ -68,11 +113,10 @@ impl AgentRuntime for CodexAppServerRuntime {
                 session.clone()
             } else {
                 let session = CodexSession::spawn(
-                    input.project.id.clone(),
-                    input.session.id.clone(),
-                    input.principal.clone(),
+                    &input,
                     &self.database_path,
-                    &input.workspace_path,
+                    &self.codex_home,
+                    self.access_server_url.as_deref(),
                 )
                 .await?;
                 sessions.insert(input.project.id.clone(), session.clone());
@@ -81,6 +125,17 @@ impl AgentRuntime for CodexAppServerRuntime {
         };
 
         session.initialize().await?;
+        if let Some(environment) = &input.execution_environment {
+            session.request("environment/add", json!({"environmentId":environment.id,"execServerUrl":environment.exec_server_url,"connectTimeoutMs":3000})).await?;
+            let info = session
+                .request("environment/info", json!({"environmentId":environment.id}))
+                .await?;
+            if info["cwd"].as_str() != Some("file:///workspace") {
+                return Err(PlatformError::Runtime(
+                    "remote executor did not report /workspace; refusing local fallback".into(),
+                ));
+            }
+        }
         let thread_id = session.ensure_thread(&input).await?;
         let (event_tx, event_rx) = mpsc::channel(256);
         {
@@ -97,13 +152,16 @@ impl AgentRuntime for CodexAppServerRuntime {
         let response = session
             .request(
                 "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "cwd": input.workspace_path,
-                    "input": [{"type":"text", "text":input.message, "text_elements":[]}],
-                    "approvalPolicy":"onRequest",
-                    "sandboxPolicy":codex_sandbox_policy(&input.workspace_path)
-                }),
+                execution_params(
+                    &input,
+                    json!({
+                        "threadId": thread_id,
+                        "cwd": input.workspace_path,
+                        "input": [{"type":"text", "text":input.message, "text_elements":[]}],
+                        "approvalPolicy":"on-request",
+                        "permissions":"feynman_project"
+                    }),
+                ),
             )
             .await;
         let result = match response {
@@ -160,6 +218,10 @@ impl AgentRuntime for CodexAppServerRuntime {
     async fn close(&self) -> PlatformResult<()> {
         let sessions = std::mem::take(&mut *self.sessions.lock().await);
         for (_, session) in sessions {
+            session.closing.store(true, Ordering::Release);
+            session
+                .fail_pending("Feynman server stopped during this Agent Run".into())
+                .await;
             let mut child = session.child.lock().await;
             let _ = child.kill().await;
         }
@@ -169,24 +231,59 @@ impl AgentRuntime for CodexAppServerRuntime {
 
 impl CodexSession {
     async fn spawn(
-        project_id: String,
-        session_id: String,
-        principal: Principal,
+        input: &AgentTurnInput,
         database_path: &Path,
-        cwd: &str,
+        codex_home: &Path,
+        access_server_url: Option<&str>,
     ) -> PlatformResult<Arc<Self>> {
+        let project_id = input.project.id.clone();
+        let session_id = input.session.id.clone();
+        let agent_id = input.project.main_agent_id.clone();
+        let principal = input.principal.clone();
+        let cwd = &input.workspace_path;
         let command = std::env::var("FEYNMAN_CODEX_BIN").unwrap_or_else(|_| "codex".into());
+        let executable = if Path::new(&command).components().count() > 1 {
+            std::fs::canonicalize(&command).ok()
+        } else {
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .find_map(|directory| std::fs::canonicalize(directory.join(&command)).ok())
+            })
+        }
+        .ok_or_else(|| {
+            PlatformError::Runtime(
+                "resolve Codex executable: configured binary is unavailable; check FEYNMAN_CODEX_BIN. For local Docker, run scripts/opensandbox/local.py repair-codex, then restart the server".into(),
+            )
+        })?;
         let mcp_executable = std::env::current_exe().map_err(|error| {
             PlatformError::Runtime(format!("resolve Feynman MCP executable: {error}"))
         })?;
-        let overrides =
-            mcp_config_overrides(&mcp_executable, database_path, &principal, &project_id)?;
-        let mut codex = Command::new(command);
+        let mut overrides = mcp_config_overrides(
+            &mcp_executable,
+            database_path,
+            &principal,
+            &project_id,
+            &agent_id,
+            &executable,
+        )?;
+        if let Some(url) = access_server_url {
+            overrides.push(format!(
+                "mcp_servers.feynman_external_tools.env.FEYNMAN_ACCESS_SERVER_URL={}",
+                serde_json::to_string(url)
+                    .map_err(|_| PlatformError::Runtime("encode access server URL".into()))?
+            ));
+        }
+        let mut codex = Command::new(&executable);
         for value in overrides {
             codex.arg("--config").arg(value);
         }
         let mut child = codex
             .arg("app-server")
+            .env("CODEX_HOME", codex_home)
+            .env("CODEX_SQLITE_HOME", codex_home)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .env_remove("CODEX_ACCESS_TOKEN")
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -217,6 +314,7 @@ impl CodexSession {
             approvals: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             alive: std::sync::atomic::AtomicBool::new(true),
+            closing: std::sync::atomic::AtomicBool::new(false),
             initialized: std::sync::atomic::AtomicBool::new(false),
             init_lock: Mutex::new(()),
             thread_lock: Mutex::new(()),
@@ -281,22 +379,28 @@ impl CodexSession {
         let result = if let Some(thread_id) = &input.conversation.runtime_thread_id {
             self.request(
                 "thread/resume",
-                json!({
-                    "threadId":thread_id,
-                    "cwd":input.workspace_path,
-                    "approvalPolicy":"onRequest",
-                    "sandbox":"workspaceWrite"
-                }),
+                execution_params(
+                    input,
+                    json!({
+                        "threadId":thread_id,
+                        "cwd":input.workspace_path,
+                        "approvalPolicy":"on-request",
+                        "permissions":"feynman_project"
+                    }),
+                ),
             )
             .await?
         } else {
-            let mut params = json!({
-                "cwd":input.workspace_path,
-                "approvalPolicy":"onRequest",
-                "sandbox":"workspaceWrite",
-                "baseInstructions":input.instructions,
-                "threadSource":"appServer"
-            });
+            let mut params = execution_params(
+                input,
+                json!({
+                    "cwd":input.workspace_path,
+                    "approvalPolicy":"on-request",
+                    "permissions":"feynman_project",
+                    "baseInstructions":input.instructions,
+                    "threadSource":"appServer"
+                }),
+            );
             if let Ok(model) = std::env::var("FEYNMAN_CODEX_MODEL") {
                 params["model"] = Value::String(model);
             }
@@ -329,7 +433,10 @@ impl CodexSession {
                 .map_err(|_| {
                     PlatformError::Runtime("Codex request response channel closed".into())
                 })?
-                .map_err(PlatformError::Runtime),
+                .map_err(|failure| match failure {
+                    RpcFailure::Rejected(s) => PlatformError::Conflict(s),
+                    RpcFailure::Transport(s) => PlatformError::Runtime(s),
+                }),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 Err(PlatformError::Runtime(format!(
@@ -363,11 +470,13 @@ impl CodexSession {
             if message.get("method").is_none() {
                 if let Some(sender) = self.pending.lock().await.remove(&id) {
                     let result = if let Some(error) = message.get("error") {
-                        Err(error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Codex request failed")
-                            .to_owned())
+                        Err(RpcFailure::Rejected(
+                            error
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Codex request failed")
+                                .to_owned(),
+                        ))
                     } else {
                         Ok(message.get("result").cloned().unwrap_or(Value::Null))
                     };
@@ -552,18 +661,32 @@ impl CodexSession {
         self.alive.store(false, Ordering::Release);
         let pending = std::mem::take(&mut *self.pending.lock().await);
         for (_, sender) in pending {
-            let _ = sender.send(Err(reason.clone()));
+            let _ = sender.send(Err(RpcFailure::Transport(reason.clone())));
         }
         if let Some(active) = self.active_turn.lock().await.take() {
             let _ = active
                 .events
                 .send(AgentRuntimeEvent::Completed {
-                    status: AgentRunStatus::Failed,
+                    status: if self.closing.load(Ordering::Acquire) {
+                        AgentRunStatus::Interrupted
+                    } else {
+                        AgentRunStatus::Failed
+                    },
                     error: Some(reason),
                 })
                 .await;
         }
     }
+}
+
+fn execution_params(input: &AgentTurnInput, mut params: Value) -> Value {
+    if let Some(environment) = &input.execution_environment {
+        // The unprivileged Docker test backend cannot nest bwrap. Explicit operator
+        // consent was checked by WorkspaceProvider; native tools bind only remotely.
+        params["permissions"] = json!(":danger-full-access");
+        params["environments"] = json!([{"environmentId":environment.id,"cwd":environment.cwd}]);
+    }
+    params
 }
 
 fn approval_summary(method: &str, title: &str, params: &Value) -> String {
@@ -643,6 +766,8 @@ fn mcp_config_overrides(
     database_path: &Path,
     principal: &Principal,
     project_id: &str,
+    agent_id: &str,
+    codex_executable: &Path,
 ) -> PlatformResult<Vec<String>> {
     fn toml_string(key: &str, value: &str) -> PlatformResult<String> {
         let value = serde_json::to_string(value)
@@ -652,11 +777,24 @@ fn mcp_config_overrides(
 
     let executable = mcp_executable.to_string_lossy();
     let database = database_path.to_string_lossy();
+    let codex_executable = serde_json::to_string(&codex_executable.to_string_lossy())
+        .map_err(|_| PlatformError::Runtime("encode Codex executable path".into()))?;
     let mut overrides = vec![
+        "default_permissions=\"feynman_project\"".into(),
+        // Codex 0.157+: explicit profile replaces the removed restricted-read
+        // sandboxPolicy fields. More-specific workspace/minimal rules override
+        // root denial; inherited temporary write access is explicitly denied.
+        format!(
+            "permissions.feynman_project={{extends=\":workspace\",filesystem={{\":root\"=\"deny\",\":minimal\"=\"read\",\":workspace_roots\"=\"write\",\":tmpdir\"=\"deny\",\":slash_tmp\"=\"deny\",{codex_executable}=\"read\"}},network={{enabled=false}}}}"
+        ),
         toml_string("mcp_servers.feynman_external_tools.command", &executable)?,
         "mcp_servers.feynman_external_tools.args=[\"external-tools-mcp\"]".into(),
         "mcp_servers.feynman_external_tools.enabled=true".into(),
         "mcp_servers.feynman_external_tools.required=true".into(),
+        // Only this first-party, bounded Broker is pre-approved in Codex. It
+        // checks owner-controlled Project grants on every call; this is not a
+        // global approval policy, credential consent or arbitrary shell bypass.
+        "mcp_servers.feynman_external_tools.default_tools_approval_mode=\"approve\"".into(),
         toml_string(
             "mcp_servers.feynman_external_tools.env.FEYNMAN_DB",
             &database,
@@ -673,6 +811,10 @@ fn mcp_config_overrides(
             "mcp_servers.feynman_external_tools.env.FEYNMAN_AGENT_PROJECT_ID",
             project_id,
         )?,
+        toml_string(
+            "mcp_servers.feynman_external_tools.env.FEYNMAN_AGENT_ID",
+            agent_id,
+        )?,
     ];
     if let Some(dws_binary) = std::env::var_os("FEYNMAN_DWS_BIN") {
         let dws_binary = dws_binary.to_string_lossy();
@@ -681,25 +823,18 @@ fn mcp_config_overrides(
             &dws_binary,
         )?);
     }
+    if let Some(config_path) = std::env::var_os("FEYNMAN_OPENSANDBOX_SMOKE_CONFIG") {
+        overrides.push(toml_string(
+            "mcp_servers.feynman_external_tools.env.FEYNMAN_OPENSANDBOX_SMOKE_CONFIG",
+            &config_path.to_string_lossy(),
+        )?);
+    }
     Ok(overrides)
-}
-
-fn codex_sandbox_policy(workspace_path: &str) -> Value {
-    json!({
-        "type":"workspaceWrite",
-        "writableRoots":[workspace_path],
-        "readOnlyAccess":{
-            "type":"restricted",
-            "includePlatformDefaults":true,
-            "readableRoots":[workspace_path]
-        },
-        "networkAccess":false
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{approval_summary, codex_sandbox_policy, mcp_config_overrides, redact_and_limit};
+    use super::{approval_summary, mcp_config_overrides, redact_and_limit};
     use feynman_core::Principal;
     use std::path::Path;
 
@@ -745,19 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_can_only_read_and_write_the_project_workspace() {
-        let policy = codex_sandbox_policy("/tmp/feynman-project");
-        assert_eq!(policy["type"], "workspaceWrite");
-        assert_eq!(policy["writableRoots"][0], "/tmp/feynman-project");
-        assert_eq!(policy["readOnlyAccess"]["type"], "restricted");
-        assert_eq!(
-            policy["readOnlyAccess"]["readableRoots"][0],
-            "/tmp/feynman-project"
-        );
-        assert_eq!(policy["networkAccess"], false);
-    }
-
-    #[test]
     fn feynman_mcp_is_scoped_to_one_project_without_editing_user_config() {
         let principal = Principal {
             user_id: "user-a".into(),
@@ -768,9 +890,16 @@ mod tests {
             Path::new("/var/lib/feynman/platform.sqlite3"),
             &principal,
             "project-a",
+            "agent-a",
+            Path::new("/opt/codex/bin/codex"),
         )
         .unwrap();
         assert!(config.iter().any(|value| value.contains("required=true")));
+        assert!(
+            config
+                .iter()
+                .any(|value| value.contains("FEYNMAN_AGENT_ID=\"agent-a\""))
+        );
         assert!(
             config
                 .iter()

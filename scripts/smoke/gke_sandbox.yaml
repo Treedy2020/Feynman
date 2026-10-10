@@ -1,0 +1,89 @@
+# Diagnostic fixture only. No credentials, application ingress, or warm pool.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: feynman-smoke
+  labels:
+    feynman-purpose: smoke
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: workspace
+  namespace: feynman-smoke
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: reader-smoke
+  namespace: feynman-smoke
+spec:
+  operatingMode: Running
+  podTemplate:
+    metadata:
+      labels:
+        feynman-purpose: smoke
+    spec:
+      runtimeClassName: gvisor
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      tolerations:
+        - key: sandbox.gke.io/runtime
+          value: gvisor
+          effect: NoSchedule
+      containers:
+        - name: runtime
+          image: python:3.13.12-slim-bookworm
+          command: [python3, -c, "import time; time.sleep(86400)"]
+          securityContext:
+            capabilities:
+              drop: [ALL]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: workspace
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-deny-network
+  namespace: feynman-smoke
+spec:
+  podSelector:
+    matchLabels:
+      feynman-purpose: smoke
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: smoke-reader
+  namespace: feynman-smoke
+automountServiceAccountToken: false

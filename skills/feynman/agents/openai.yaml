@@ -1,0 +1,6 @@
+interface:
+  display_name: "Feynman"
+  short_description: "Manage isolated projects, Main Agents and scheduled work"
+  default_prompt: "Use $feynman to inspect my projects and help manage their work."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>环境、租约与记忆 · Feynman Docs</title><link rel="icon" href="data:,"><link rel="stylesheet" href="../assets/site.css"><script src="../assets/doc-site.js" defer></script></head>
+<body data-doc="resources" data-docs-root=".."><div class="page"><header class="topbar"></header><main id="content">
+<section class="hero"><span class="doc-status">Rust 初版 · 2026-10-09</span><h1>环境有使用期限，记忆有证据来路。</h1><p class="lead">本地单用户部署；配置、授权与长期记忆保存在 Feynman Server，应用在指定 Workspace 中执行。容器恢复不自动继承秘密使用权，Agent 更换不自动继承私有记忆。</p><p class="note">本页是当前 CLI / MCP 实现契约。新增使用租约不是 Provider 短期凭证；不提供强租户隔离、不开放公网用户认证。测试不使用真实业务凭证或调用模型。OpenSandbox 实机验证单独报告，协议夹具不是实机证明。</p></section>
+<nav class="doc-outline"><a href="#architecture">模块</a><a href="#environment">环境装载</a><a href="#leases">租约与恢复</a><a href="#memory">长期记忆</a><a href="#cli">CLI / MCP</a><a href="#verification">验收与限制</a></nav>
+<section class="section" id="architecture"><span class="label">模块与持久化</span><h2>长期状态在本机，秘密只交付给指定应用。</h2>
+<svg viewBox="0 0 940 325" role="img" aria-label="环境申请、使用租约、执行与记忆的关系" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px">
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="currentColor"/></marker></defs>
+<g fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrow)"><path d="M210 82 H275"/><path d="M495 82 H570"/><path d="M680 115 V180"/><path d="M680 213 H495"/><path d="M210 213 H275"/><path d="M385 115 V180"/></g>
+<g fill="var(--subtle)" stroke="var(--line)"><rect x="30" y="45" width="180" height="74" rx="8"/><rect x="30" y="180" width="180" height="74" rx="8"/>
+<a href="#environment"><rect x="275" y="45" width="220" height="74" rx="8"/></a><a href="#leases"><rect x="570" y="45" width="220" height="74" rx="8"/></a>
+<a href="#memory"><rect x="275" y="180" width="220" height="74" rx="8"/></a><a href="#environment"><rect x="570" y="180" width="220" height="74" rx="8"/></a></g>
+<g fill="currentColor" font-family="system-ui" font-size="15"><text x="52" y="76">Agent / MCP</text><text x="52" y="101" font-size="11">只申请，不批准，不 secret-get</text><text x="52" y="210">本机 SQLite / Keychain</text><text x="52" y="235" font-size="11">元数据与秘密分开</text><text x="295" y="76">Environment Profile</text><text x="295" y="101" font-size="11">版本化、用途、用户批准</text><text x="590" y="76">Usage Lease</text><text x="590" y="101" font-size="11">固定 Agent / 实例 / 凭证版本</text><text x="295" y="210">MemoryStore</text><text x="295" y="235" font-size="11">证据引用、权限检查、修订历史</text><text x="590" y="210">受管 Launcher</text><text x="590" y="235" font-size="11">进程 env / 验证 tmpfs 文件</text><text x="30" y="298" font-size="12">点击模块查看细节 · Codex 原生 Executor 仍负责常规 Shell / 文件工具，不全局装载应用秘密。</text></g></svg>
+<p>ResourceManager 是 CLI / MCP 的共同入口，环境与租约、记忆在内部独立实现。project_resources 保存当前元数据，resource_revisions 保存不可覆盖的修订，resource_audit 只保存动作标识。原生会话 JSONL、Observation 历史与 MemoryItem 是不同持久层。</p></section>
+<section class="section" id="environment"><h2>Environment Profile：定义用途，不复制操作者环境。</h2><p>每个 Profile 固定 argv、相对工作目录、普通变量、秘密引用与最大租期。所有者创建或修改；Agent 只可查看、申请、查询状态及运行已批准版本。项目、Agent、Profile revision、credential version 在启动前复核，配置修改或秘密轮换要求重新申请。</p>
+<div class="table-wrap"><table><thead><tr><th>内容</th><th>当前行为</th></tr></thead><tbody><tr><td>普通变量</td><td>进入项目配置与修订。敏感命名及已登记秘密真值拒绝进入普通配置。</td></tr><tr><td>秘密</td><td>通过所有者 stdin 导入。macOS 默认 Keychain；非 macOS 默认禁用，显式 FEYNMAN_SECRET_STORE=private_file 才启用 0700 / 0600 私有明文文件。该模式不是加密 Vault。</td></tr><tr><td>进程 env</td><td>只给指定应用进程及其子进程，不更改容器全局 env，不写 /workspace/.env。模型认证、DWS 私有缓存不参与业务装载。</td></tr><tr><td>临时秘密文件</td><td>仅在 /proc/mounts 核实 /dev/shm 为 tmpfs 后使用。0700 / 0600，到期 / 退出清理；本地 macOS 不支持该模式，不退回普通磁盘。</td></tr><tr><td>远端</td><td>复核 OpenSandbox 实例与持久卷，通过可信 SSH / Docker stdin 装载。秘密不放在 argv、容器配置、HTTP 命令记录或持久项目卷中。缺少 SSH 配置、Python、Docker 或 tmpfs 时明确失败，不回退本机执行。</td></tr></tbody></table></div>
+<p class="note">Agent 控制应用代码，也可能读取或复制应用秘密。批准时 accept_secret_exposure 必须显式接受此风险；输出过滤不能保证阻止经过编码、变形或主动外发的泄露。PATH / HOME / CODEX_HOME、动态加载器和可信运行参数禁止由 Profile 覆盖。</p></section>
+<section class="section" id="leases"><h2>租约到期与外部凭证失效，是两件事。</h2><p>当前实现 usage_lease；provider_credential_lease 明确返回 unsupported，不签发 GCP Token，也不把 DWS 登录 / GitLab PAT / 数据库密码宣称为真正短期凭证。秘密引用或 Lease ID 都不是独立 bearer authority。</p><p>默认租期 1800 秒；审批可明确允许自动续租，并设置授权总期限，CLI 默认八小时、当前最多一天。租期不超过 Profile 最大值与批准截止时间。续租不扩大范围，终态 / unknown 不可复活。</p>
+<pre><code>pending request → approved / denied
+approved + 固定启动 key → starting → active
+active → completed / expired / revoking → revoked
+传输结果不确定 → unknown（不重发、不重新签发）
+cleanup：pending / managed_group_stopped / unreachable / missing / instance_changed / unknown
+provider_revocation：unsupported</code></pre><p>启动必须提供 UUID idempotency_key，重复使用相同 key 返回原记录，不再执行。同一批准已有 active / starting / unknown / revoking 工作负载时，即使换新 key 也拒绝启动，需先完成对账或清理。Server 重启只检查、续租已有有效使用权或停止进程；不重启应用。远端 / 本地 Launcher 自行计时，Server 离线仍到期。新沙盒实例不能使用旧租约，需重新获权。</p><p>撤销租约会撤销其关联环境批准，阻止同一申请重新开进程，并尝试停止受管进程组。SSH 断线报告 unreachable，不假报已清理。进程组不是强约束：主动 setsid / 脱离受管组或复制秘密的行为无法保证回收；当前面向可信个人 workload。</p></section>
+<section class="section" id="memory"><h2>MemoryItem：保存判断，不覆盖证据。</h2><p>kind 为 fact / inference / decision / todo；scope 为 agent 私有或 project 共享。Agent MCP 仅写自己的私有记忆，项目共享内容由所有者明确创建；用户可确认和置顶，Agent 不可自行宣称用户确认。替代 Agent 不继承旧身份私有记忆。</p><p>每次修改必须携带 expected_revision，冲突拒绝，不静默覆盖。证据可引用 source_id + observation_sequence、memory_id + memory_revision、完整 Git commit 或项目 Run。Git hash 是引用，不代表本轮已核验仓库。待办可关联已有 Task，执行状态仍由 Task 管理。</p><p>来源及递归记忆依赖在检索、读取、历史与置顶装载时复核。DWS 撤权后派生摘要不返回；Agent 修改不能删除已有证据来路。外部资料是未可信数据；原生上下文已经看到的内容不能保证遗忘。未填写来源的内容或 Agent 主动复制而省略证据的行为，无法靠这个模型自动识别。</p><p>SQLite FTS5 trigram 支持中文子串；短查询与需要转义的查询使用补充检索，每次候选上限 10000，结果 1..200。权限筛选先于分页与返回正文。新 Turn 最多装载 20 条置顶记忆、8 KiB，作为普通输入数据而不是系统指令。</p><p>新登记的秘密也会从已有记忆读取结果中排除（包括历史）；所有者仍可删除被隐藏的条目，删除响应不返回正文。delete 是逻辑隐藏，修订与审计继续保留；不提供物理安全擦除或模型遗忘保证。搜索索引只含当前未删除内容，备份仍由用户管理。</p></section>
+<section class="section" id="cli"><h2>当前 CLI 与 Agent MCP。</h2><pre><code>feynman secrets put PROJECT_ID --name edc-test-db --stdin
+feynman secrets list PROJECT_ID
+# profile.json：普通配置和秘密引用，不包含秘密真值
+feynman env put PROJECT_ID --input profile.json
+feynman env profiles PROJECT_ID
+feynman env request PROJECT_ID --profile debug --reason "复现测试案例"
+feynman env approve PROJECT_ID REQUEST_ID --revision 1 --accept-secret-exposure
+# --auto-renew --seconds 28800 可明确批准有界续租
+feynman env run PROJECT_ID REQUEST_ID --idempotency-key UUID
+feynman leases list PROJECT_ID
+feynman env logs PROJECT_ID WORKLOAD_ID
+feynman leases revoke PROJECT_ID LEASE_ID --revision REVISION
+feynman leases renew PROJECT_ID LEASE_ID --revision REVISION
+
+feynman memory put PROJECT_ID --input memory.json
+feynman memory search PROJECT_ID --query "计算变量"
+feynman memory get PROJECT_ID MEMORY_ID
+feynman memory history PROJECT_ID MEMORY_ID
+feynman memory confirm PROJECT_ID MEMORY_ID --revision REVISION --pin
+feynman memory delete PROJECT_ID MEMORY_ID --revision REVISION</code></pre>
+<details><summary>配置示例</summary><pre><code>// profile.json：完整配置替换，修改时带当前 expected_revision
+{"expected_revision":0,"profile":{"name":"debug","argv":["python3","debug.py"],"cwd":"repo",
+ "variables":{"APP_MODE":"test"},"secrets":{"DATABASE_URL":"sec_REFERENCE"},
+ "secret_files":{},"max_seconds":1800}}
+// memory.json：项目共享由用户创建；Agent MCP 默认 scope=agent
+{"content":{"title":"计算变量的验证约束","body":"先分离实际需求与既有架构限制。",
+ "kind":"decision","scope":"project","evidence":[],"tags":["edc"],"state":"open"}}
+// MCP：身份由运行时固定，arguments 是操作参数，不可携带其他项目 / Agent
+feynman_environment {"operation":"request","arguments":{"profile":"debug","reason":"复现问题"}}
+feynman_environment {"operation":"run","arguments":{"request_id":"envreq_REFERENCE","idempotency_key":"UUID"}}
+feynman_memory {"operation":"search","arguments":{"query":"计算变量"}}
+feynman_memory {"operation":"put","arguments":{"content":{"title":"待确认需求","body":"摘要与证据分开。","kind":"inference"}}}</code></pre></details>
+<p>入口是本机 loopback owner RPC；Agent MCP 走固定 Agent 的受限 RPC。它不能 secret.put / env.approve / lease.renew / memory.confirm，也不读秘密真值。普通 HTTP JSON、错误和日志不是秘密导出通道；同一 OS 用户或可接触 Server 管理端口的进程仍属于可信个人部署，不构成多租户授权。</p></section>
+<section class="section" id="verification"><h2>测试行为，不靠状态名字证明安全。</h2><p>公开接口测试见 <a href="../../scripts/smoke/test_resources.py">环境、租约与记忆测试</a>：真实 Unix 子进程，模型与 DWS 使用离线夹具。覆盖指定进程获 env、输出过滤、启动幂等、Server 离线到期、轮换 / 停用、私有记忆更换身份、重启 / CAS、DWS 来源撤权传播。真实 Spark 验证需通过 Tailscale SSH 检查，不作为离线测试的隐含保证。</p><p>未实现的可选演进：Provider 真正短期签发 / 远端撤销、强租户或不可信进程隔离、自动任意进程 env 热更新、向量检索、物理保留清理与自动历史遗忘。当前版本可以进行个人项目测试，不面向公网托管不可信用户。</p><details><summary>2026-10-09 · 本轮验收记录</summary><p>cargo test --workspace：33 个通过；cargo clippy --workspace --all-targets -- -D warnings：通过；公开 CLI / HTTP / MCP smoke：56 个，其中 52 通过、4 个真实 Spark / Codex 测试跳过；HTML 文档 17 个通过，导航 29 个入口检查通过。</p><p>新资源测试使用隔离测试目录、合成凭证和 private_file 显式测试后端，不读取用户真实凭证。远端协议使用 Docker CLI 夹具和真实 Unix Launcher；未证明 Spark 实机或 macOS Keychain 真实写入。Spark SSH 二次身份检查未完成。本轮不重启用户 Server、不执行真实模型 Turn、不调用业务服务。</p></details></section>
+</main><footer><a href="../index.html">← 架构总览</a><span>Environment / Usage Lease / Memory · 当前实现</span></footer></div></body></html>

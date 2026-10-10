@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="记录原始 Rust slice 及后来追加的接口。专用 Codex Home、远端执行和任务调度，以当前架构与运行指南为准。">
+  <title>Feynman Docs · 后端与 CLI 契约</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="../assets/site.css">
+  <script src="../assets/doc-site.js" defer></script>
+</head>
+<body data-doc="api" data-docs-root="..">
+<div class="page">
+  <header class="topbar"></header>
+  <main id="content">
+    <section class="hero"><span class="doc-status">接口演进</span><h1>后端与 CLI 契约</h1><p class="lead">记录原始 Rust slice 及后来追加的接口。专用 Codex Home、远端执行和任务调度，以当前架构与运行指南为准。</p><p class="note">2026-10-09 更新：环境、使用租约与长期记忆见 <a href="environment-leases-memory.html">当前资源模块契约</a>。本页保留既有兼容入口说明。Agent CRUD、独立来源历史、固定窗口与 Inbox 的当前可运行命令见 <a href="agent-schedules.html#cli">Agent 与 Schedule</a>；旧 send / messages 仍为立即启动入口，不提供 Inbox 排队。</p></section>
+    <nav class="doc-outline" aria-label="本页章节"><a href="#runtime-path">Runtime path</a><a href="#domain-ownership">Domain ownership</a><a href="#http-contract">HTTP contract</a><a href="#cli-contract">CLI contract</a><a href="#security-and-deployment-boundary">Security and deployment boundary</a></nav>
+    <article class="doc-body"><p class="source-title" id="rust-backend-and-cli-v1-implementation-boundary">Rust Backend and CLI — V1 Implementation Boundary</p>
+<p>This document records the original Rust slice. The current <a href="local-first-main-agent-v1.html">local-first Main Agent architecture</a> adds Skill/CLI delegation, Project Tasks/Schedules, and OpenSandbox native Workspace orchestration. The local-only runtime details below describe that original adapter.</p>
+<p>The subsequent <a href="../modules/external-access/dws.html">DWS device authorization slice</a> adds project-scoped asynchronous sign-in, public links/status, and a local private credential store. It does not implement provider revocation, sandbox credential delivery, or automatic business-tool grants.</p>
+<h2 id="runtime-path">Runtime path</h2>
+<pre class="text"><code>feynman CLI
+  └─ HTTP/JSON v1 ──&gt; Feynman Server
+                       ├─ IdentityProvider → Principal (user + tenant; never request-body tenant)
+                       ├─ PlatformService → project / conversation / run use cases
+                       ├─ PlatformRepository → SQLite, every query scoped by tenant_id
+                       ├─ WorkspaceProvider → persistent local workspace by tenant/project
+                       └─ AgentRuntime → Codex App Server process
+                                            ├─ normalized events → durable run event log
+                                            └─ project MCP (per Codex process)
+                                                 └─ ExternalToolService (Tool Grant check)
+                                                      └─ External Access → explicitly bound CLI account</code></pre>
+<p>The CLI submits a message, receives an <code>AgentRun</code>, then reads its ordered event feed using <code>after=&lt;sequence&gt;</code>. If the terminal disconnects, it can resume from the last sequence. The feed is persisted; it does not depend on a live SSE connection.</p>
+<h2 id="domain-ownership">Domain ownership</h2>
+<ul>
+<li>A <code>Project</code> belongs to one Tenant and has one long-lived Main Agent.</li>
+<li>An <code>AgentSession</code> is the durable association between that Main Agent, its Project, and its persistent Workspace. It may outlive a particular Codex process.</li>
+<li>A <code>Conversation</code> is the human-readable thread; its Codex thread ID is runtime metadata.</li>
+<li>An <code>AgentRun</code> is one invocation caused by a user message or later event. It references the Agent Session and owns a monotonic event sequence.</li>
+<li>A <code>Tool Invocation</code> is authorized against the current Project on every call. In this slice, the Agent can request the fixed DWS enterprise search through MCP; an owner manages the durable project <code>Tool Grant</code> with the Feynman CLI. A <code>Tool Result</code> contains structured source/time metadata but is not yet persisted as an <code>Observation</code>.</li>
+<li><code>Session Heartbeat</code> liveness and a periodic wake-up are separate: liveness updates the Session; a scheduled wake-up may create a new Agent Run. Neither is implemented as an external endpoint yet.</li>
+</ul>
+<h2 id="http-contract">HTTP contract</h2>
+<p>The current extension exposes <code>GET /v1/status</code>, <code>GET /v1/projects/{id}/status</code>, <code>GET/POST /v1/projects/{id}/workspace</code>, <code>POST .../workspace/actions</code>, <code>GET/POST .../tasks</code>, <code>GET/DELETE .../tasks/{task_id}</code>, <code>GET/POST .../schedules</code> and <code>PUT .../schedules/{schedule_id}</code>. Task requests contain <code>title</code>/<code>prompt</code>; Schedules add <code>interval_seconds</code>, RFC3339 <code>at</code>, and <code>enabled</code> (false by default). Workspace creation takes only <code>provider</code>; private connection/image configuration belongs to the operator, not the caller. Actions are refresh/stop/resume/restore/renew.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Route</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /v1/health</code></td>
+<td>Local server health</td>
+</tr>
+<tr>
+<td><code>GET /v1/projects</code></td>
+<td>List projects in the authenticated Tenant</td>
+</tr>
+<tr>
+<td><code>POST /v1/projects</code></td>
+<td>Create a Project; body contains <code>name</code>, not <code>tenant_id</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/projects/{project_id}</code></td>
+<td>Read one tenant-scoped Project</td>
+</tr>
+<tr>
+<td><code>GET /v1/projects/{project_id}/external-tools</code></td>
+<td>List known external tools and this Project’s grants</td>
+</tr>
+<tr>
+<td><code>PUT /v1/projects/{project_id}/external-tools/{tool_id}</code></td>
+<td>Grant a known external tool to this Project</td>
+</tr>
+<tr>
+<td><code>DELETE /v1/projects/{project_id}/external-tools/{tool_id}</code></td>
+<td>Revoke a Project’s tool grant</td>
+</tr>
+<tr>
+<td><code>POST /v1/projects/{project_id}/external-tools/{tool_id}/invoke</code></td>
+<td>Invoke a granted typed tool; body is <code>{ "arguments": { ... } }</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/projects/{project_id}/conversation</code></td>
+<td>Read conversation, messages, runs</td>
+</tr>
+<tr>
+<td><code>POST /v1/projects/{project_id}/messages</code></td>
+<td>Create a message and start an Agent Run</td>
+</tr>
+<tr>
+<td><code>GET /v1/projects/{project_id}/runs/{run_id}/events?after=N</code></td>
+<td>Read run status and events after cursor N</td>
+</tr>
+<tr>
+<td><code>POST /v1/projects/{project_id}/runs/{run_id}/approvals/{request_id}</code></td>
+<td>Answer a pending native Codex approval</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cli-contract">CLI contract</h2>
+<pre class="text"><code>feynman --server URL health
+feynman --server URL projects list
+feynman --server URL projects create --name &quot;Project name&quot;
+feynman --server URL projects show PROJECT_ID
+feynman --server URL external-tools list PROJECT_ID
+feynman --server URL external-tools grant PROJECT_ID dws.aisearch.enterprise
+feynman --server URL external-tools revoke PROJECT_ID dws.aisearch.enterprise
+feynman --server URL external-tools invoke PROJECT_ID TOOL_ID --arguments &#39;{&quot;operation&quot;:&quot;list&quot;}&#39;
+feynman --server URL conversation PROJECT_ID
+feynman --server URL chat PROJECT_ID</code></pre>
+<p><code>FEYNMAN_SERVER_URL</code> may replace the repeated <code>--server</code> option. The interactive chat prints streamed deltas and tool activity, and asks before answering a native approval request.</p>
+<h2 id="security-and-deployment-boundary">Security and deployment boundary</h2>
+<p>The current <code>DevIdentityProvider</code> supplies only the local development Principal (<code>local-user</code> in Tenant <code>local</code>). The server refuses any non-loopback bind until a real identity provider is configured. It does not accept a tenant ID from CLI flags or request bodies. Therefore this is a tenant-isolated local development foundation, not yet a remotely usable multi-tenant service.</p>
+<p>The adapter targets Codex CLI 0.157.1. Every thread/resume/turn selects <code>permissions: "feynman_project"</code> and native <code>on-request</code> approvals. A per-process Permission Profile replaces the removed restricted-read <code>sandboxPolicy</code> fields: workspace writes, minimal platform reads and the resolved Codex executable, general filesystem read denial, no temporary-directory writes, and no direct network access. The server injects the profile and Feynman MCP bridge with config overrides; it does not modify global Codex configuration. The bridge and HTTP invocation endpoint expose only fixed, typed operations and check the Project’s <code>Tool Grant</code> for every invocation. An ungranted call is denied with CLI guidance; after an owner grants access, the Agent can call it in a later turn. See <a href="https://learn.chatgpt.com/docs/permissions">official Permission Profile documentation</a>; validate wire values against the installed CLI’s generated schema when upgrading.</p>
+<p>The first adapter, <code>dws.aisearch.enterprise</code>, invokes only fixed enterprise search with allowlisted arguments. It discovers content without accessing or mutating the matched resource. The updated <a href="../modules/external-access/index.html">External Access module</a> resolves an explicitly verified Connection and expiring ProjectCliBinding; no host-profile fallback. Credentials stay on the local server, not in the Agent Workspace. First-batch GitLab and Git use fixed read-only CLI operations under the same grant and binding checks. Tool Results include source and observation time, but are not yet persisted as durable Evidence. There is no per-call human approval prompt for these low-risk reads: explicit revocable Tool Grant plus active verified binding is the gate.</p>
+<p>Codex model authentication is still supplied by the local Codex profile available to the Server process; provider credential brokering is not implemented yet.</p>
+<p>SQLite and the filesystem workspace provider are V1 local adapters. The <code>PlatformRepository</code>, <code>IdentityProvider</code>, and <code>WorkspaceProvider</code> interfaces are the replacement seams for PostgreSQL, user authentication, and a persistent remote sandbox such as GKE Agent Sandbox. The workspace path is derived on the server from Tenant and Project IDs; clients cannot choose arbitrary server paths.</p>
+<p>The Codex adapter speaks the App Server JSONL protocol. OpenAI describes App Server as the integration for product-owned persistent conversations, streamed events, tools, and approvals (<a href="https://developers.openai.com/codex/app-server">Codex App Server overview</a>). The adapter is isolated behind <code>AgentRuntime</code>; no Codex-specific IDs appear as the platform’s durable identity.</p>
+</article>
+  </main>
+  <footer><a href="../index.html">← 架构总览</a><span>Feynman Docs · HTML 阅读入口 / 2026-09-29</span></footer>
+</div>
+</body>
+</html>
